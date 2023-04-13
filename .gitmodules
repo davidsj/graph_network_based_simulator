@@ -1,0 +1,3 @@
+[submodule "physical_domains/taichi_elements"]
+	path = physical_domains/taichi_elements
+	url = https://github.com/taichi-dev/taichi_elements.git
