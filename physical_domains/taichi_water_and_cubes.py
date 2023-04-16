@@ -48,14 +48,13 @@ with open(os.path.join(args.out_dir, 'metadata.json'), 'w') as f:
     md['n_materials'] = len(MPMSolver.materials)
     json.dump(md, f)
 
-# Create the trajectories for each dataset.
-for dataset in ['training', 'validation', 'test']:
-    n_trajs = args.__dict__[f'n_{dataset}']
-    os.makedirs(os.path.join(args.out_dir, dataset))
+# Create the trajectories for each dataset split.
+for split in ['training', 'validation', 'test']:
+    n_trajs = args.__dict__[f'n_{split}']
+    os.makedirs(os.path.join(args.out_dir, split))
 
     for traj_idx in range(n_trajs):
         positions = []
-        materials = []
 
         ti.init(arch=ti.cuda)
         mpm = MPMSolver(res=(64, 64))
@@ -82,7 +81,7 @@ for dataset in ['training', 'validation', 'test']:
             mpm.add_cube(lower_corner=[left, bottom],
                         cube_size=[args.cube_size, args.cube_size],
                         material=MPMSolver.material_elastic)
-        print(f'{dataset} trajectory {traj_idx:5d}: created {len(mpm.particle_info()["position"])} particles')
+        print(f'{split} trajectory {traj_idx:5d}: created {len(mpm.particle_info()["position"])} particles')
 
         # Simulate.
         for frame in range(args.traj_len):
@@ -92,9 +91,11 @@ for dataset in ['training', 'validation', 'test']:
                 mpm.step(args.dt_ms / 1000.0)
             particles = mpm.particle_info()
             positions.append(particles['position'])
-            materials.append(particles['material'])
+        materials = mpm.particle_info()['material']
         
         # Save the trajectory.
-        np.savez_compressed(os.path.join(args.out_dir, dataset, f'{traj_idx}.npz'),
+        # Note that this format assumes no particles are created or destroyed
+        # after the first frame.
+        np.savez_compressed(os.path.join(args.out_dir, split, f'{traj_idx}.npz'),
                             positions=np.array(positions),
                             materials=np.array(materials))
