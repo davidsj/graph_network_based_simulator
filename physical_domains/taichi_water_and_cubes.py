@@ -7,6 +7,10 @@ import json
 import io
 import contextlib
 
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import gns
+
 # Parse arguments.
 parser = argparse.ArgumentParser()
 parser.add_argument('--out_dir', type=str, default='datasets/taichi_water_and_cubes')
@@ -94,8 +98,5 @@ for split in ['training', 'validation', 'test']:
         materials = mpm.particle_info()['material']
         
         # Save the trajectory.
-        # Note that this format assumes no particles are created or destroyed
-        # after the first frame.
-        np.savez_compressed(os.path.join(args.out_dir, split, f'{traj_idx}.npz'),
-                            positions=np.array(positions),
-                            materials=np.array(materials))
+        traj = gns.Trajectory(np.array(positions), np.array(materials), len(MPMSolver.materials))
+        traj.save(os.path.join(args.out_dir, split, f'{traj_idx}.npz'))

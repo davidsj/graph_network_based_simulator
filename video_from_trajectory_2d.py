@@ -5,6 +5,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
+import gns
+
 # Parse arguments.
 parser = argparse.ArgumentParser()
 parser.add_argument('dataset_dir', type=str)
@@ -35,13 +37,9 @@ assert out_file.endswith('.mp4')
 assert not os.path.exists(out_file)
 
 # Load the trajectory.
-traj = np.load(os.path.join(args.dataset_dir, args.split, f'{args.traj_idx}.npz'))
-positions = traj['positions']
-materials = traj['materials']
-n_particles = materials.shape[0]
-assert positions.shape[0] == traj_len
-assert positions.shape[1] == n_particles
-assert positions.shape[2] == 2
+traj = gns.Trajectory.load(os.path.join(args.dataset_dir, args.split, f'{args.traj_idx}.npz'))
+assert traj.len == traj_len
+assert traj.dim == 2
 
 # Set up the square figure and axis for animation.
 fig, ax = plt.subplots(figsize=(6, 6))
@@ -52,12 +50,12 @@ fig.tight_layout()
 ax.plot([0.0, 1.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0, 0.0], color='black', linewidth=1.0)
 
 # Draw the particles.
-unique_materials = np.unique(materials)
 particle_scatters = []
 material_masks = []
-for material in unique_materials:
-    material_mask = materials == material
-    particle_scatters.append(ax.scatter(positions[0, material_mask, 0], positions[0, material_mask, 1], s=0.5))
+for material in np.unique(traj.materials):
+    material_mask = traj.materials == material
+    particle_scatters.append(ax.scatter(traj.positions[0, material_mask, 0],
+                                        traj.positions[0, material_mask, 1], s=0.5))
     material_masks.append(material_mask)
 
 # Show the frame index.
@@ -67,7 +65,7 @@ frame_text = ax.text(0.1, 0.9, '', transform=ax.transAxes, fontsize=12)
 def update(frame):
     frame_text.set_text(f'Frame {frame:5d}, Time {frame*dt_ms:7.1f} ms')
     for material_mask, particle_scatter in zip(material_masks, particle_scatters):
-        particle_scatter.set_offsets(positions[frame, material_mask, :])
+        particle_scatter.set_offsets(traj.positions[frame, material_mask, :])
     return particle_scatters
 ani = FuncAnimation(fig, update, frames=traj_len)
 
