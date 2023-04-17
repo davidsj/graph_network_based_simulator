@@ -62,3 +62,8 @@ class Encoder(torch.nn.Module):
         edges = self.edge_layer_norm(edges)
 
         return nodes, edges, dp.neighbor_idxs
+
+class Decoder(MLP):
+    """Decodes graph node output into predicted acceleration."""
+    def __init__(self, physical_dim, node_embedding_dim=128):
+        super().__init__(node_embedding_dim, physical_dim)
