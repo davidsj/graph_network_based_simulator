@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.spatial import KDTree
+import torch
 
 class Trajectory:
     """A class representing a trajectory of particle positions and materials.
@@ -24,9 +25,9 @@ class Trajectory:
     @classmethod
     def load(cls, path):
         traj = np.load(path)
-        return cls(traj['positions'], traj['materials'], traj['n_materials'])
+        return cls(traj['positions'], traj['materials'], traj['n_materials'].item())
 
-    def datapoints(self, n_previous_velocities, connectivity_radius):
+    def get_datapoints(self, n_previous_velocities, connectivity_radius):
         """Return a list of Datapoints consisting of position, `n_previous_velocities`
         velocities, acceleration, and material for each particle, as well as index
         tuples for particle pairs within `connectivity_radius` of each other."""
@@ -53,13 +54,17 @@ class Trajectory:
             neighbors = kdtree.query_ball_point(pos, connectivity_radius)
             neighbor_idxs = np.array([(i, j) for i in range(self.n_particles) for j in neighbors[i] if i != j])
 
-            points.append(Datapoint(pos, vel, acc, mat, neighbor_idxs))
+            points.append(TorchDatapoint(pos, vel, acc, mat, neighbor_idxs))
         return points
 
-class Datapoint:
+class TorchDatapoint:
+    """A class representing a single datapoint consisting of position, velocity,
+    acceleration, material, and neighbor index tuples for a single frame of a
+    trajectory, all as torch tensors.
+    """
     def __init__(self, positions, velocities, accelerations, materials, neighbor_idxs):
-        self.positions = positions
-        self.velocities = velocities
-        self.accelerations = accelerations
-        self.materials = materials
-        self.neighbor_idxs = neighbor_idxs
+        self.positions = torch.tensor(positions, dtype=torch.float32)
+        self.velocities = torch.tensor(velocities, dtype=torch.float32)
+        self.accelerations = torch.tensor(accelerations, dtype=torch.float32)
+        self.materials = torch.tensor(materials, dtype=torch.int64)
+        self.neighbor_idxs = torch.tensor(neighbor_idxs, dtype=torch.int64)
