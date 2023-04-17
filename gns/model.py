@@ -32,9 +32,9 @@ class Encoder(torch.nn.Module):
         # Materials are embedded from a one-hot representation.
         self.material_encoder = torch.nn.Linear(n_materials, material_embedding_dim)
 
-        # Nodes are encoded from a concatenation of the position, previous velocities,
-        # and material of the corresponding particle.
-        self.node_encoder = MLP((1 + n_previous_velocities)*physical_dim + material_embedding_dim,
+        # Nodes are encoded from a concatenation of the previous velocities and
+        # material of the corresponding particle.
+        self.node_encoder = MLP(n_previous_velocities*physical_dim + material_embedding_dim,
                                  node_embedding_dim)
         self.node_layer_norm = torch.nn.LayerNorm(node_embedding_dim)
         
@@ -50,7 +50,7 @@ class Encoder(torch.nn.Module):
 
         # Concatenate the positions, velocities, and materials.
         velocities = dp.velocities.reshape(-1, self.n_previous_velocities*self.physical_dim)
-        node_features = torch.cat([dp.positions, velocities, materials], dim=1)
+        node_features = torch.cat([velocities, materials], dim=1)
         nodes = self.node_encoder(node_features)
         nodes = self.node_layer_norm(nodes)
 

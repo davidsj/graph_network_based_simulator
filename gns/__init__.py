@@ -1,1 +1,1 @@
-from .trajectory import Trajectory, Datapoint
+from .trajectory import Trajectory
