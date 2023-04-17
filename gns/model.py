@@ -63,6 +63,45 @@ class Encoder(torch.nn.Module):
 
         return nodes, edges, dp.neighbor_idxs
 
+class Processor(torch.nn.Module):
+    """`n_layers` graph network blocks, as described in Battaglia et al (2018).
+    Relational inductive biases, deep learning, and graph networks.
+
+    Reduction is by summation, and there is no global state."""
+    def __init__(self, n_layers=10, node_embedding_dim=128, edge_embedding_dim=128):
+        super().__init__()
+
+        self.edge_updaters = torch.nn.ModuleList()
+        self.edge_layer_norms = torch.nn.ModuleList()
+        self.node_updaters = torch.nn.ModuleList()
+        self.node_layer_norms = torch.nn.ModuleList()
+
+        for _ in range(n_layers):
+            self.edge_updaters.append(MLP(edge_embedding_dim + 2*node_embedding_dim, edge_embedding_dim))
+            self.edge_layer_norms.append(torch.nn.LayerNorm(edge_embedding_dim))
+            self.node_updaters.append(MLP(edge_embedding_dim + node_embedding_dim, node_embedding_dim))
+            self.node_layer_norms.append(torch.nn.LayerNorm(node_embedding_dim))
+
+    def forward(self, nodes, edges, neighbor_idxs):
+        for edge_updater, edge_layer_norm, node_updater, node_layer_norm in zip(
+            self.edge_updaters, self.edge_layer_norms, self.node_updaters, self.node_layer_norms):
+            # Update the edges.
+            receivers = nodes[neighbor_idxs[:, 0]]
+            senders = nodes[neighbor_idxs[:, 1]]
+            edges = edge_updater(torch.cat([edges, receivers, senders], dim=1))
+            edges = edge_layer_norm(edges)
+
+            # Aggregate the edges for each node.
+            aggregated_edges = torch.zeros(nodes.shape[0], edges.shape[1])
+            index = neighbor_idxs[:, [0]].broadcast_to((edges.shape[0], edges.shape[1]))
+            aggregated_edges = aggregated_edges.scatter_add(0, index, edges)
+
+            # Update the nodes.
+            nodes = node_updater(torch.cat([aggregated_edges, nodes], dim=1))
+            nodes = node_layer_norm(nodes)
+
+        return nodes, edges, neighbor_idxs
+
 class Decoder(MLP):
     """Decodes graph node output into predicted acceleration."""
     def __init__(self, physical_dim, node_embedding_dim=128):
