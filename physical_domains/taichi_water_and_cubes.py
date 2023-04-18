@@ -61,7 +61,12 @@ for split in ['training', 'validation', 'test']:
         positions = []
 
         ti.init(arch=ti.cuda)
-        mpm = MPMSolver(res=(64, 64))
+        res = 64
+        mpm = MPMSolver(res=(res, res), padding=0)
+
+        # This is implicitly how the MPMSolver sets the boundaries.
+        box_boundaries = np.array([[-1/res, 1.0],
+                                   [-1/res, 1.0]])
 
         # Create the water as high up as possible.
         min_left = 0.0
@@ -98,5 +103,6 @@ for split in ['training', 'validation', 'test']:
         materials = mpm.particle_info()['material']
         
         # Save the trajectory.
-        traj = gns.Trajectory(np.array(positions), np.array(materials), len(MPMSolver.materials))
+        traj = gns.Trajectory(np.array(positions), np.array(materials),
+                              len(MPMSolver.materials), box_boundaries=box_boundaries)
         traj.save(os.path.join(args.out_dir, split, f'{traj_idx}.npz'))

@@ -47,7 +47,11 @@ ax.axis('off')
 fig.tight_layout()
 
 # Draw the bounding box.
-ax.plot([0.0, 1.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0, 0.0], color='black', linewidth=1.0)
+if traj.box_boundaries is not None:
+    (left, right), (bottom, top) = traj.box_boundaries
+    ax.plot([left, right, right, left, left],
+            [bottom, bottom, top, top, bottom],
+            color='black', linewidth=1.0)
 
 # Draw the particles.
 particle_scatters = []
