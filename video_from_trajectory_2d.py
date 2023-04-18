@@ -47,8 +47,8 @@ ax.axis('off')
 fig.tight_layout()
 
 # Draw the bounding box.
-if traj.box_boundaries is not None:
-    (left, right), (bottom, top) = traj.box_boundaries
+if md['box_boundaries'] is not None:
+    (left, right), (bottom, top) = md['box_boundaries']
     ax.plot([left, right, right, left, left],
             [bottom, bottom, top, top, bottom],
             color='black', linewidth=1.0)

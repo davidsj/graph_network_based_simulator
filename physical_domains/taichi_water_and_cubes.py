@@ -44,12 +44,18 @@ assert args.water_size + args.cube_size <= 1.0
 assert not os.path.exists(args.out_dir)
 os.makedirs(args.out_dir)
 
+res = 64
+# This is implicitly how the MPMSolver sets the boundaries.
+box_boundaries = np.array([[-1/res, 1.0],
+                            [-1/res, 1.0]])
+
 # Write metadata as JSON.
 with open(os.path.join(args.out_dir, 'metadata.json'), 'w') as f:
     md = vars(args)
     md['name'] = 'taichi_water_and_cubes'
     md['dimensions'] = 2
     md['n_materials'] = len(MPMSolver.materials)
+    md['box_boundaries'] = box_boundaries.tolist()
     json.dump(md, f)
 
 # Create the trajectories for each dataset split.
@@ -61,12 +67,7 @@ for split in ['training', 'validation', 'test']:
         positions = []
 
         ti.init(arch=ti.cuda)
-        res = 64
         mpm = MPMSolver(res=(res, res), padding=0)
-
-        # This is implicitly how the MPMSolver sets the boundaries.
-        box_boundaries = np.array([[-1/res, 1.0],
-                                   [-1/res, 1.0]])
 
         # Create the water as high up as possible.
         min_left = 0.0
@@ -103,6 +104,5 @@ for split in ['training', 'validation', 'test']:
         materials = mpm.particle_info()['material']
         
         # Save the trajectory.
-        traj = gns.Trajectory(np.array(positions), np.array(materials),
-                              len(MPMSolver.materials), box_boundaries=box_boundaries)
+        traj = gns.Trajectory(np.array(positions), np.array(materials), len(MPMSolver.materials))
         traj.save(os.path.join(args.out_dir, split, f'{traj_idx}.npz'))
