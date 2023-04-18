@@ -62,9 +62,24 @@ class TorchDatapoint:
     acceleration, material, and neighbor index tuples for a single frame of a
     trajectory, all as torch tensors.
     """
-    def __init__(self, positions, velocities, accelerations, materials, neighbor_idxs):
-        self.positions = torch.tensor(positions, dtype=torch.float32)
-        self.velocities = torch.tensor(velocities, dtype=torch.float32)
-        self.accelerations = torch.tensor(accelerations, dtype=torch.float32)
-        self.materials = torch.tensor(materials, dtype=torch.int64)
-        self.neighbor_idxs = torch.tensor(neighbor_idxs, dtype=torch.int64)
+    def __init__(self, positions, velocities, accelerations, materials, neighbor_idxs,
+                 device=None, _move=False):
+        self.device = torch.device(device)
+        if _move:
+            # In this case, the arguments should all be torch tensors.
+            self.positions = positions.to(device)
+            self.velocities = velocities.to(device)
+            self.accelerations = accelerations.to(device)
+            self.materials = materials.to(device)
+            self.neighbor_idxs = neighbor_idxs.to(device)
+        else:
+            # In this case, the arguments should all be numpy arrays.
+            self.positions = torch.tensor(positions, dtype=torch.float32, device=device)
+            self.velocities = torch.tensor(velocities, dtype=torch.float32, device=device)
+            self.accelerations = torch.tensor(accelerations, dtype=torch.float32, device=device)
+            self.materials = torch.tensor(materials, dtype=torch.int64, device=device)
+            self.neighbor_idxs = torch.tensor(neighbor_idxs, dtype=torch.int64, device=device)
+
+    def to(self, device):
+        return TorchDatapoint(self.positions, self.velocities, self.accelerations, self.materials,
+                              self.neighbor_idxs, device=device, _move=True)

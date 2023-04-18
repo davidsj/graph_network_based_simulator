@@ -59,7 +59,7 @@ class Encoder(torch.nn.Module):
         velocities = dp.velocities.reshape(-1, self.n_previous_velocities*self.physical_dim)
         node_features = torch.cat([velocities, materials], dim=1)
         if self.box_boundaries is not None:
-            wall_dist = torch.zeros(node_features.shape[0], 2*self.physical_dim)
+            wall_dist = torch.zeros(node_features.shape[0], 2*self.physical_dim, device=node_features.device)
             for i in range(self.physical_dim):
                 wall_dist[:, 2*i] = dp.positions[:, i] - self.box_boundaries[i][0]
                 wall_dist[:, 2*i + 1] = self.box_boundaries[i][1] - dp.positions[:, i]
@@ -106,7 +106,7 @@ class Processor(torch.nn.Module):
             edges = edge_layer_norm(edges)
 
             # Aggregate the edges for each node.
-            aggregated_edges = torch.zeros(nodes.shape[0], edges.shape[1])
+            aggregated_edges = torch.zeros(nodes.shape[0], edges.shape[1], device=edges.device)
             index = neighbor_idxs[:, [0]].broadcast_to((edges.shape[0], edges.shape[1]))
             aggregated_edges = aggregated_edges.scatter_add(0, index, edges)
 
@@ -120,3 +120,19 @@ class Decoder(MLP):
     """Decodes graph node output into predicted acceleration."""
     def __init__(self, physical_dim, node_embedding_dim=128):
         super().__init__(node_embedding_dim, physical_dim)
+
+class GNS(torch.nn.Module):
+    """Graph network-based simulator for predicting particle acceleration,
+    composed of an Encoder, Processor, and Decoder."""
+    def __init__(self, n_materials, physical_dim, n_previous_velocities,
+                 connectivity_radius, box_boundaries=None):
+        super().__init__()
+        self.encoder = Encoder(n_materials, physical_dim, n_previous_velocities,
+                               connectivity_radius, box_boundaries=box_boundaries)
+        self.processor = Processor()
+        self.decoder = Decoder(physical_dim)
+
+    def forward(self, dp):
+        nodes, edges, neighbor_idxs = self.encoder(dp)
+        nodes, edges, neighbor_idxs = self.processor(nodes, edges, neighbor_idxs)
+        return self.decoder(nodes)
