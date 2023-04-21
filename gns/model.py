@@ -1,4 +1,6 @@
+import numpy as np
 import torch
+from scipy.spatial import KDTree
 
 class MLP(torch.nn.Module):
     """Shared MLP architecture for encoder, processor, and decoder."""
@@ -19,13 +21,28 @@ class MLP(torch.nn.Module):
         x = self.layers[-1](x)
         return x
 
+class FeatureEncoder(torch.nn.Module):
+    """Shared encoder architecture for node and edge features"""
+    def __init__(self, in_dim, embedding_dim=128):
+        super().__init__()
+        self.mlp = MLP(in_dim, embedding_dim)
+        self.layer_norm = torch.nn.LayerNorm(embedding_dim)
+
+    def forward(self, x):
+        x = self.mlp(x)
+        x = self.layer_norm(x)
+        return x
+
 class Encoder(torch.nn.Module):
-    """Encodes a datapoint into the appropriate graph representation, excluding acceleration
-    (which is the prediction target)."""
+    """Encodes a datapoint into the appropriate graph representation,
+    excluding acceleration (which is the prediction target)."""
     def __init__(self, n_materials, physical_dim, n_previous_velocities,
                  connectivity_radius, box_boundaries=None,
                  material_embedding_dim=16, node_embedding_dim=128, edge_embedding_dim=128):
         super().__init__()
+        assert n_previous_velocities >= 0
+        assert connectivity_radius >= 0
+
         self.n_materials = n_materials
         self.physical_dim = physical_dim
         self.n_previous_velocities = n_previous_velocities
@@ -36,46 +53,52 @@ class Encoder(torch.nn.Module):
         self.material_encoder = torch.nn.Linear(n_materials, material_embedding_dim)
 
         # Nodes are encoded from a concatenation of the previous velocities,
-        # material of the corresponding particle, and if orthogonal walls are
-        # present, the distance to them, clipped to `connectivity_radius`.
+        # material of the corresponding particle, and (if present) distance
+        # to orthogonal walls, clipped to `connectivity_radius`.
         node_feature_dim = n_previous_velocities*physical_dim + material_embedding_dim
         if box_boundaries is not None:
             node_feature_dim += 2*physical_dim
-        self.node_encoder = MLP(node_feature_dim, node_embedding_dim)
-        self.node_layer_norm = torch.nn.LayerNorm(node_embedding_dim)
+        self.node_encoder = FeatureEncoder(node_feature_dim, node_embedding_dim)
 
-        # Edges are encoded from a concatenation of the relative position and distance
-        # between the two neighboring particles.
-        self.edge_encoder = MLP(physical_dim + 1, edge_embedding_dim)
-        self.edge_layer_norm = torch.nn.LayerNorm(edge_embedding_dim)
+        # Edges are encoded from a concatenation of the relative position and
+        # distance between the two neighboring particles.
+        self.edge_encoder = FeatureEncoder(physical_dim + 1, edge_embedding_dim)
 
     def forward(self, dp):
+        n_particles = dp.materials.shape[0]
+
         # Make a one-hot representation of the materials, then embed them.
         materials = torch.nn.functional.one_hot(dp.materials, self.n_materials).to(torch.float32)
         materials = self.material_encoder(materials)
 
-        # Concatenate the velocities, materials, and if orthogonal walls are present,
-        # the distance to them, clipped to `connectivity_radius`.
+        # Concatenate the velocities, materials, and (if present) distance
+        # to orthogonal walls, clipped to `connectivity_radius`.
         velocities = dp.velocities.reshape(-1, self.n_previous_velocities*self.physical_dim)
         node_features = torch.cat([velocities, materials], dim=1)
         if self.box_boundaries is not None:
-            wall_dist = torch.zeros(node_features.shape[0], 2*self.physical_dim, device=node_features.device)
+            wall_dist = torch.zeros(n_particles, 2*self.physical_dim, device=node_features.device)
             for i in range(self.physical_dim):
                 wall_dist[:, 2*i] = dp.positions[:, i] - self.box_boundaries[i][0]
                 wall_dist[:, 2*i + 1] = self.box_boundaries[i][1] - dp.positions[:, i]
             wall_dist = torch.clamp(wall_dist, min=0.0, max=self.connectivity_radius)
             node_features = torch.cat([node_features, wall_dist], dim=1)
         nodes = self.node_encoder(node_features)
-        nodes = self.node_layer_norm(nodes)
+
+        # Identify edges. TODO: Do on GPU?
+        pos_np = dp.positions.detach().cpu().numpy()
+        kdtree = KDTree(pos_np)
+        neighbors = kdtree.query_ball_point(pos_np, self.connectivity_radius)
+        neighbor_idxs = torch.tensor([(i, j) for i in range(n_particles) for j in neighbors[i] if i != j],
+                                     device=dp.positions.device)
+        neighbor_idxs = neighbor_idxs.reshape((-1, 2)) # ensure the right shape in case there are no neighbors
 
         # Compute the relative positions and distances.
-        relative_positions = dp.positions[dp.neighbor_idxs[:, 0]] - dp.positions[dp.neighbor_idxs[:, 1]]
+        relative_positions = dp.positions[neighbor_idxs[:, 0]] - dp.positions[neighbor_idxs[:, 1]]
         distances = torch.norm(relative_positions, dim=1, keepdim=True)
         edge_features = torch.cat([relative_positions, distances], dim=1)
         edges = self.edge_encoder(edge_features)
-        edges = self.edge_layer_norm(edges)
 
-        return nodes, edges, dp.neighbor_idxs
+        return nodes, edges, neighbor_idxs
 
 class Processor(torch.nn.Module):
     """`n_layers` graph network blocks, as described in Battaglia et al (2018).

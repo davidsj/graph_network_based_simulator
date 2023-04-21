@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.spatial import KDTree
 import torch
 
 class Trajectory:
@@ -27,12 +26,9 @@ class Trajectory:
         traj = np.load(path)
         return cls(traj['positions'], traj['materials'], traj['n_materials'].item())
 
-    def get_datapoints(self, n_previous_velocities, connectivity_radius):
+    def get_datapoints(self, n_previous_velocities):
         """Return a list of Datapoints consisting of position, `n_previous_velocities`
-        velocities, acceleration, and material for each particle, as well as index
-        tuples for particle pairs within `connectivity_radius` of each other."""
-        assert n_previous_velocities >= 0
-        assert connectivity_radius >= 0
+        velocities, acceleration, and material for each particle."""
 
         # Compute velocities and accelerations.
         velocities = np.zeros_like(self.positions)
@@ -42,44 +38,35 @@ class Trajectory:
 
         points = []
         for frame in range(n_previous_velocities, self.len-1):
-            # Get node data.
             pos = self.positions[frame]
             vel = np.concatenate([velocities[frame-i] for i in range(n_previous_velocities-1, -1, -1)], axis=1)
             vel = vel.reshape((self.n_particles, n_previous_velocities, self.dim))
             acc = accelerations[frame]
             mat = self.materials
 
-            # Get edge data.
-            kdtree = KDTree(pos)
-            neighbors = kdtree.query_ball_point(pos, connectivity_radius)
-            neighbor_idxs = np.array([(i, j) for i in range(self.n_particles) for j in neighbors[i] if i != j])
-
-            points.append(TorchDatapoint(pos, vel, acc, mat, neighbor_idxs))
+            points.append(TorchDatapoint(pos, vel, acc, mat))
         return points
 
 class TorchDatapoint:
     """A class representing a single datapoint consisting of position, velocity,
-    acceleration, material, and neighbor index tuples for a single frame of a
-    trajectory, all as torch tensors.
+    acceleration, and material for a single frame of a trajectory, all as torch
+    tensors.
     """
-    def __init__(self, positions, velocities, accelerations, materials, neighbor_idxs,
+    def __init__(self, positions, velocities, accelerations, materials,
                  device=None, _move=False):
-        self.device = torch.device(device)
         if _move:
             # In this case, the arguments should all be torch tensors.
             self.positions = positions.to(device)
             self.velocities = velocities.to(device)
             self.accelerations = accelerations.to(device)
             self.materials = materials.to(device)
-            self.neighbor_idxs = neighbor_idxs.to(device)
         else:
             # In this case, the arguments should all be numpy arrays.
             self.positions = torch.tensor(positions, dtype=torch.float32, device=device)
             self.velocities = torch.tensor(velocities, dtype=torch.float32, device=device)
             self.accelerations = torch.tensor(accelerations, dtype=torch.float32, device=device)
             self.materials = torch.tensor(materials, dtype=torch.int64, device=device)
-            self.neighbor_idxs = torch.tensor(neighbor_idxs, dtype=torch.int64, device=device)
 
     def to(self, device):
         return TorchDatapoint(self.positions, self.velocities, self.accelerations, self.materials,
-                              self.neighbor_idxs, device=device, _move=True)
+                              device=device, _move=True)
