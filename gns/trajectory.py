@@ -50,9 +50,11 @@ class Trajectory:
             mat = self.materials
 
             # Get edge data.
+            # TODO: Move this to Encoder.
             kdtree = KDTree(pos)
             neighbors = kdtree.query_ball_point(pos, connectivity_radius)
             neighbor_idxs = np.array([(i, j) for i in range(self.n_particles) for j in neighbors[i] if i != j])
+            neighbor_idxs = neighbor_idxs.reshape((-1, 2)) # in case there are no neighbors
 
             points.append(TorchDatapoint(pos, vel, acc, mat, neighbor_idxs))
         return points
@@ -64,7 +66,6 @@ class TorchDatapoint:
     """
     def __init__(self, positions, velocities, accelerations, materials, neighbor_idxs,
                  device=None, _move=False):
-        self.device = torch.device(device)
         if _move:
             # In this case, the arguments should all be torch tensors.
             self.positions = positions.to(device)

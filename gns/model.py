@@ -19,9 +19,51 @@ class MLP(torch.nn.Module):
         x = self.layers[-1](x)
         return x
 
+class FeatureEncoder(torch.nn.Module):
+    """Shared encoder architecture for node and edge features, which
+    optionally maintains element-wise normalization statistics during
+    training."""
+    def __init__(self, in_dim, embedding_dim=128, normalize=False):
+        super().__init__()
+        self.normalize = normalize
+        if normalize:
+            # Initialize normalization statistics.
+            self.register_buffer('n', torch.zeros(1))
+            self.register_buffer('sum', torch.zeros(in_dim))
+            self.register_buffer('sum_sq', torch.zeros(in_dim))
+            # self.n = 0
+            # self.sum = torch.nn.Parameter(torch.zeros(in_dim), requires_grad=False)
+            # self.sum_sq = torch.nn.Parameter(torch.zeros(in_dim), requires_grad=False)
+            # self.sum.data.zero_()
+            # self.sum_sq.data.zero_()
+
+        # Initialize model components.
+        self.mlp = MLP(in_dim, embedding_dim)
+        self.layer_norm = torch.nn.LayerNorm(embedding_dim)
+
+    def forward(self, x):
+        # Update normalization statistics.
+        if self.normalize and self.training:
+            self.n += x.shape[0]
+            self.sum.data += x.sum(dim=0)
+            self.sum_sq.data += x.square().sum(dim=0)
+
+        # Normalize as per the paper.
+        # This is numerically unstable and sometimes yields negative variances.
+        # Could set a floor to avoid this.
+        if self.normalize:
+            mean = self.sum/self.n
+            var = self.sum_sq/self.n - mean.square()
+            x = (x - mean)/torch.sqrt(var + 1e-12)
+
+        # Encode.
+        x = self.mlp(x)
+        x = self.layer_norm(x)
+        return x
+
 class Encoder(torch.nn.Module):
-    """Encodes a datapoint into the appropriate graph representation, excluding acceleration
-    (which is the prediction target)."""
+    """Encodes a datapoint into the appropriate graph representation,
+    excluding acceleration (which is the prediction target)."""
     def __init__(self, n_materials, physical_dim, n_previous_velocities,
                  connectivity_radius, box_boundaries=None,
                  material_embedding_dim=16, node_embedding_dim=128, edge_embedding_dim=128):
@@ -36,26 +78,24 @@ class Encoder(torch.nn.Module):
         self.material_encoder = torch.nn.Linear(n_materials, material_embedding_dim)
 
         # Nodes are encoded from a concatenation of the previous velocities,
-        # material of the corresponding particle, and if orthogonal walls are
-        # present, the distance to them, clipped to `connectivity_radius`.
+        # material of the corresponding particle, and (if present) distance
+        # to orthogonal walls, clipped to `connectivity_radius`.
         node_feature_dim = n_previous_velocities*physical_dim + material_embedding_dim
         if box_boundaries is not None:
             node_feature_dim += 2*physical_dim
-        self.node_encoder = MLP(node_feature_dim, node_embedding_dim)
-        self.node_layer_norm = torch.nn.LayerNorm(node_embedding_dim)
+        self.node_encoder = FeatureEncoder(node_feature_dim, node_embedding_dim)
 
-        # Edges are encoded from a concatenation of the relative position and distance
-        # between the two neighboring particles.
-        self.edge_encoder = MLP(physical_dim + 1, edge_embedding_dim)
-        self.edge_layer_norm = torch.nn.LayerNorm(edge_embedding_dim)
+        # Edges are encoded from a concatenation of the relative position and
+        # distance between the two neighboring particles.
+        self.edge_encoder = FeatureEncoder(physical_dim + 1, edge_embedding_dim)
 
     def forward(self, dp):
         # Make a one-hot representation of the materials, then embed them.
         materials = torch.nn.functional.one_hot(dp.materials, self.n_materials).to(torch.float32)
         materials = self.material_encoder(materials)
 
-        # Concatenate the velocities, materials, and if orthogonal walls are present,
-        # the distance to them, clipped to `connectivity_radius`.
+        # Concatenate the velocities, materials, and (if present) distance
+        # to orthogonal walls, clipped to `connectivity_radius`.
         velocities = dp.velocities.reshape(-1, self.n_previous_velocities*self.physical_dim)
         node_features = torch.cat([velocities, materials], dim=1)
         if self.box_boundaries is not None:
@@ -66,14 +106,12 @@ class Encoder(torch.nn.Module):
             wall_dist = torch.clamp(wall_dist, min=0.0, max=self.connectivity_radius)
             node_features = torch.cat([node_features, wall_dist], dim=1)
         nodes = self.node_encoder(node_features)
-        nodes = self.node_layer_norm(nodes)
 
         # Compute the relative positions and distances.
         relative_positions = dp.positions[dp.neighbor_idxs[:, 0]] - dp.positions[dp.neighbor_idxs[:, 1]]
         distances = torch.norm(relative_positions, dim=1, keepdim=True)
         edge_features = torch.cat([relative_positions, distances], dim=1)
         edges = self.edge_encoder(edge_features)
-        edges = self.edge_layer_norm(edges)
 
         return nodes, edges, dp.neighbor_idxs
 
