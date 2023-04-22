@@ -22,7 +22,7 @@ class MLP(torch.nn.Module):
         return x
 
 class FeatureEncoder(torch.nn.Module):
-    """Shared encoder architecture for node and edge features"""
+    """Shared encoder architecture for node and edge features."""
     def __init__(self, in_dim, embedding_dim=128):
         super().__init__()
         self.mlp = MLP(in_dim, embedding_dim)
@@ -89,7 +89,7 @@ class Encoder(torch.nn.Module):
         kdtree = KDTree(pos_np)
         neighbors = kdtree.query_ball_point(pos_np, self.connectivity_radius)
         neighbor_idxs = torch.tensor([(i, j) for i in range(n_particles) for j in neighbors[i] if i != j],
-                                     device=dp.positions.device)
+                                     device=dp.positions.device, dtype=torch.int64)
         neighbor_idxs = neighbor_idxs.reshape((-1, 2)) # ensure the right shape in case there are no neighbors
 
         # Compute the relative positions and distances.
