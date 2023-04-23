@@ -29,6 +29,7 @@ class Trajectory:
     def get_datapoints(self, n_previous_velocities):
         """Return a list of Datapoints consisting of position, `n_previous_velocities`
         velocities, acceleration, and material for each particle."""
+        assert n_previous_velocities >= 0
 
         # Compute velocities and accelerations.
         velocities = np.zeros_like(self.positions)

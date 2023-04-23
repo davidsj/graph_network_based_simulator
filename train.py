@@ -60,6 +60,7 @@ while True:
         # Try again with a different timestamp.
         continue
     break
+pr(f'Output directory: {outdir}')
 with open(os.path.join(outdir, 'args.json'), 'w') as f:
     json.dump(vars(args), f)
 
@@ -124,7 +125,7 @@ for i, datapoint in enumerate(train_data):
     if sched is not None:
         sched.step()
 
-    # Update the training loss.
+    # Update the running training loss.
     training_loss_sum += loss.item()
     training_loss_n += 1
 
