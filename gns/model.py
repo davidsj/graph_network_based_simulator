@@ -85,12 +85,16 @@ class Encoder(torch.nn.Module):
         nodes = self.node_encoder(node_features)
 
         # Identify edges. TODO: Do on GPU?
-        pos_np = dp.positions.detach().cpu().numpy()
-        kdtree = KDTree(pos_np)
-        neighbors = kdtree.query_ball_point(pos_np, self.connectivity_radius)
-        neighbor_idxs = torch.tensor([(i, j) for i in range(n_particles) for j in neighbors[i] if i != j],
-                                     device=dp.positions.device, dtype=torch.int64)
-        neighbor_idxs = neighbor_idxs.reshape((-1, 2)) # ensure the right shape in case there are no neighbors
+        if self.connectivity_radius in dp.neighbor_idx_cache:
+            neighbor_idxs = dp.neighbor_idx_cache[self.connectivity_radius].to(dp.positions.device)
+        else:
+            pos_np = dp.positions.detach().cpu().numpy()
+            kdtree = KDTree(pos_np)
+            neighbors = kdtree.query_ball_point(pos_np, self.connectivity_radius)
+            neighbor_idxs = torch.tensor([(i, j) for i in range(n_particles) for j in neighbors[i] if i != j],
+                                        device=dp.positions.device, dtype=torch.int64)
+            neighbor_idxs = neighbor_idxs.reshape((-1, 2)) # ensure the right shape in case there are no neighbors
+            dp.neighbor_idx_cache[self.connectivity_radius] = neighbor_idxs.to('cpu')
 
         # Compute the relative positions and distances.
         relative_positions = dp.positions[neighbor_idxs[:, 0]] - dp.positions[neighbor_idxs[:, 1]]

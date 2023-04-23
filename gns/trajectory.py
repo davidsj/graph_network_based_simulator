@@ -67,6 +67,7 @@ class TorchDatapoint:
             self.velocities = torch.tensor(velocities, dtype=torch.float32, device=device)
             self.accelerations = torch.tensor(accelerations, dtype=torch.float32, device=device)
             self.materials = torch.tensor(materials, dtype=torch.int64, device=device)
+        self.neighbor_idx_cache = {}
 
     def to(self, device):
         return TorchDatapoint(self.positions, self.velocities, self.accelerations, self.materials,
