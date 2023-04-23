@@ -104,7 +104,8 @@ class Processor(torch.nn.Module):
     """`n_layers` graph network blocks, as described in Battaglia et al (2018).
     Relational inductive biases, deep learning, and graph networks.
 
-    Reduction is by summation, and there is no global state."""
+    Node and edge updates go through a residual stream. Reduction is by summation,
+    and there is no global state."""
     def __init__(self, n_layers=10, node_embedding_dim=128, edge_embedding_dim=128):
         super().__init__()
 
@@ -125,17 +126,19 @@ class Processor(torch.nn.Module):
             # Update the edges.
             receivers = nodes[neighbor_idxs[:, 0]]
             senders = nodes[neighbor_idxs[:, 1]]
-            edges = edge_updater(torch.cat([edges, receivers, senders], dim=1))
-            edges = edge_layer_norm(edges)
+            edges_out = edge_updater(torch.cat([edges, receivers, senders], dim=1))
+            edges_out = edge_layer_norm(edges_out)
+            edges = edges + edges_out
 
             # Aggregate the edges for each node.
             aggregated_edges = torch.zeros(nodes.shape[0], edges.shape[1], device=edges.device)
-            index = neighbor_idxs[:, [0]].broadcast_to((edges.shape[0], edges.shape[1]))
+            index = neighbor_idxs[:, [0]].broadcast_to(edges.shape)
             aggregated_edges = aggregated_edges.scatter_add(0, index, edges)
 
             # Update the nodes.
-            nodes = node_updater(torch.cat([aggregated_edges, nodes], dim=1))
-            nodes = node_layer_norm(nodes)
+            nodes_out = node_updater(torch.cat([aggregated_edges, nodes], dim=1))
+            nodes_out = node_layer_norm(nodes_out)
+            nodes = nodes + nodes_out
 
         return nodes, edges, neighbor_idxs
 
