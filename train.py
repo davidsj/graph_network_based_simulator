@@ -25,10 +25,17 @@ parser.add_argument('--n_previous_velocities', type=int, default=5,
                          'for each particle.')
 parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate.')
 parser.add_argument('--lr_schedule', type=str, default='triangular',
-                    choices=['constant', 'triangular'],
+                    choices=['constant', 'triangular', 'exponential_plus_constant'],
                     help='Learning rate schedule. If triangular, the learning rate will be '
-                         'increased linearly from 0 to args.lr over the first half of '
-                         'training, then decreased linearly to 0 over the second half.')
+                         'increased linearly from 0 to --lr over the first half of '
+                         'training, then decreased linearly to 0 over the second half.'
+                         'If exponential_plus_constant, the learning rate will decay from'
+                         '--lr to --lr_exponential_min, with the delta above'
+                         '--lr_exponential_min decreasing continuously by a factor of'
+                         '--lr_exponential_decay_factor every --lr_exponential_decay_interval steps.')
+parser.add_argument('--lr_exponential_min', type=float, default=1e-6)
+parser.add_argument('--lr_exponential_decay_factor', type=float, default=0.1)
+parser.add_argument('--lr_exponential_decay_interval', type=int, default=5000000)
 parser.add_argument('--checkpoint_interval', type=int, default=5000,
                     help='Number of training steps between checkpoints.')
 parser.add_argument('--validation_interval', type=int, default=None,
@@ -47,6 +54,9 @@ assert os.path.exists(args.dataset_dir)
 assert args.n_previous_velocities >= 0
 assert args.connectivity_radius >= 0.0
 assert args.lr > 0.0
+assert args.lr_exponential_min >= 0.0
+assert args.lr_exponential_decay_factor > 0.0
+assert args.lr_exponential_decay_interval > 0
 assert args.checkpoint_interval > 0
 if args.validation_interval is None:
     args.validation_interval = args.checkpoint_interval
@@ -121,6 +131,9 @@ model = gns.GNS(md['n_materials'], md['dimensions'],
 opt = torch.optim.Adam(model.parameters(), lr=args.lr)
 if args.lr_schedule == 'triangular':
     sched = torch.optim.lr_scheduler.CyclicLR(opt, 0., args.lr, step_size_up=len(train_data)//2, cycle_momentum=False)
+elif args.lr_schedule == 'exponential_plus_constant':
+    sched = gns.ExponentialPlusConstantLR(opt, args.lr, args.lr_exponential_min,
+                                          args.lr_exponential_decay_factor, args.lr_exponential_decay_interval)
 else:
     sched = None
 
