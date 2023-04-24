@@ -102,7 +102,7 @@ class Encoder(torch.nn.Module):
             node_features = torch.cat([node_features, wall_dist], dim=-1)
         nodes = self.node_encoder(node_features)
 
-        # Identify edges. TODO: Do on GPU or at least parallelize across datapoints?
+        # Identify edges. TODO: Do on GPU or at least parallelize across the batch dimension?
         neighbor_idxs = []
         for i, dp in enumerate(dps):
             if self.connectivity_radius in dp.neighbor_idx_cache:
@@ -161,7 +161,7 @@ class Processor(torch.nn.Module):
             edges = edges + edges_out
 
             # Aggregate the edges for each node. We do this with nodes flattened
-            # across datapoints so we can use scatter_add.
+            # across the batch dimension so we can use scatter_add.
             aggregated_edges = torch.zeros(nodes.shape[0]*nodes.shape[1], edges.shape[-1],
                                            device=edges.device)
             index = neighbor_idxs[:, [0]]*nodes.shape[1] + neighbor_idxs[:, [1]]
