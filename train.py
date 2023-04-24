@@ -23,6 +23,7 @@ parser.add_argument('connectivity_radius', type=float,
 parser.add_argument('--n_previous_velocities', type=int, default=5,
                     help='Number of previous velocities to use as features'
                          'for each particle.')
+parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'AdamW'])
 parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate.')
 parser.add_argument('--lr_schedule', type=str, default='triangular',
                     choices=['constant', 'triangular', 'exponential_plus_constant'],
@@ -128,7 +129,10 @@ device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cp
 model = gns.GNS(md['n_materials'], md['dimensions'],
                 args.n_previous_velocities, args.connectivity_radius,
                 md['box_boundaries']).to(device)
-opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+if args.optimizer == 'Adam':
+    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+elif args.optimizer == 'AdamW':
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
 if args.lr_schedule == 'triangular':
     sched = torch.optim.lr_scheduler.CyclicLR(opt, 0., args.lr, step_size_up=len(train_data)//2, cycle_momentum=False)
 elif args.lr_schedule == 'exponential_plus_constant':
