@@ -18,8 +18,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument('dataset_dir', type=str,
                     help='Directory containing the dataset. The --out_dir argument '
                          'used to generate the dataset should be passed here.')
-parser.add_argument('connectivity_radius', type=float,
-                    help='Maximum distance for particles to be considered neighbors.')
+parser.add_argument('--connectivity_radius', type=float,
+                    help='Maximum distance for particles to be considered neighbors.'
+                         'If not specified, the default value for the dataset will be'
+                         'used.')
 parser.add_argument('--n_previous_velocities', type=int, default=5,
                     help='Number of previous velocities to use as features'
                          'for each particle.')
@@ -52,7 +54,8 @@ args = parser.parse_args()
 # Validate arguments.
 assert os.path.exists(args.dataset_dir)
 assert args.n_previous_velocities >= 0
-assert args.connectivity_radius >= 0.0
+if args.connectivity_radius is not None:
+    assert args.connectivity_radius >= 0.0
 assert args.lr > 0.0
 assert args.lr_exponential_min >= 0.0
 assert args.lr_exponential_decay_factor > 0.0
@@ -63,10 +66,11 @@ assert args.log_record_interval > 0
 assert args.max_training_trajectories is None or args.max_training_trajectories >= 0
 assert args.max_validation_trajectories is None or args.max_validation_trajectories > 0
 
-
 # Load metadata.
 with open(os.path.join(args.dataset_dir, 'metadata.json'), 'r') as f:
     md = json.load(f)
+if args.connectivity_radius is None:
+    args.connectivity_radius = md['default_connectivity_radius']
 
 # Create the output directory and record the arguments.
 while True:
