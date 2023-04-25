@@ -39,9 +39,8 @@ parser.add_argument('--lr_exponential_decay_factor', type=float, default=0.1)
 parser.add_argument('--lr_exponential_decay_interval', type=int, default=5000000)
 parser.add_argument('--checkpoint_interval', type=int, default=5000,
                     help='Number of training steps between checkpoints.')
-parser.add_argument('--validation_interval', type=int, default=None,
-                    help='Number of training steps between calculating validation loss. If'
-                         'None, use the same value as --checkpoint_interval.')
+parser.add_argument('--validation_interval', type=int, default=10000,
+                    help='Number of training steps between calculating validation loss.')
 parser.add_argument('--log_record_interval', type=int, default=100,
                     help='Number of training steps between training log records.')
 parser.add_argument('--max_training_trajectories', type=int, default=None,
@@ -59,8 +58,6 @@ assert args.lr_exponential_min >= 0.0
 assert args.lr_exponential_decay_factor > 0.0
 assert args.lr_exponential_decay_interval > 0
 assert args.checkpoint_interval > 0
-if args.validation_interval is None:
-    args.validation_interval = args.checkpoint_interval
 assert args.validation_interval > 0
 assert args.log_record_interval > 0
 assert args.max_training_trajectories is None or args.max_training_trajectories >= 0
