@@ -102,6 +102,8 @@ class Encoder(torch.nn.Module):
         nodes = self.node_encoder(node_features)
 
         # Identify neighbors.
+        # We do this using brute force on the GPU rather than using a k-d tree
+        # on the CPU, as it's about 20x as fast (tested on 2.95k particles).
         left = pos.reshape(n_datapoints, -1, 1, self.physical_dim)
         right = pos.reshape(n_datapoints, 1, -1, self.physical_dim)
         mask = (left - right).square().sum(dim=-1) < self.connectivity_radius**2
