@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-from scipy.spatial import KDTree
 from .trajectory import TorchDatapoint
 
 class MLP(torch.nn.Module):
@@ -102,25 +101,14 @@ class Encoder(torch.nn.Module):
             node_features = torch.cat([node_features, wall_dist], dim=-1)
         nodes = self.node_encoder(node_features)
 
-        # Identify edges. TODO: Do on GPU or at least parallelize across the batch dimension?
-        neighbor_idxs = []
-        for i, dp in enumerate(dps):
-            if self.connectivity_radius in dp.neighbor_idx_cache:
-                dp_neighbor_idxs = dp.neighbor_idx_cache[self.connectivity_radius].to(device)
-            else:
-                pos_np = pos[i].detach().cpu().numpy()
-                kdtree = KDTree(pos_np)
-                neighbors = kdtree.query_ball_point(pos_np, self.connectivity_radius)
-                dp_neighbor_idxs = torch.tensor([(j, k) for j in range(n_particles) for k in neighbors[j] if j != k],
-                                            device=device, dtype=torch.int64)
-                dp_neighbor_idxs = dp_neighbor_idxs.reshape((-1, 2)) # ensure the right shape in case there are no neighbors
-                dp.neighbor_idx_cache[self.connectivity_radius] = dp_neighbor_idxs.to('cpu')
-            datapoint_idx = torch.tensor([[i]], device=device).broadcast_to(dp_neighbor_idxs.shape[0], 1)
-            dp_neighbor_idxs = torch.cat([datapoint_idx, dp_neighbor_idxs], dim=1)
-            neighbor_idxs.append(dp_neighbor_idxs)
-        neighbor_idxs = torch.cat(neighbor_idxs, dim=0) # (datapoint_idx, receiver_idx, sender_idx)
+        # Identify neighbors.
+        left = pos.reshape(n_datapoints, -1, 1, self.physical_dim)
+        right = pos.reshape(n_datapoints, 1, -1, self.physical_dim)
+        mask = (left - right).square().sum(dim=-1) < self.connectivity_radius**2
+        mask.diagonal(dim1=1, dim2=2).fill_(False) # don't connect to self
+        neighbor_idxs = mask.nonzero()
 
-        # Compute the relative positions and distances.
+        # Encode the edges for each pair of neighbors.
         receiver_pos = pos[neighbor_idxs[:, 0], neighbor_idxs[:, 1]]
         sender_pos = pos[neighbor_idxs[:, 0], neighbor_idxs[:, 2]]
         relative_positions = receiver_pos - sender_pos
@@ -151,6 +139,11 @@ class Processor(torch.nn.Module):
             self.node_layer_norms.append(torch.nn.LayerNorm(node_embedding_dim))
 
     def forward(self, nodes, edges, neighbor_idxs):
+        # Precompute the indices for use of scatter_add in each layer.
+        scatter_index = neighbor_idxs[:, [0]]*nodes.shape[1] + neighbor_idxs[:, [1]]
+        scatter_index = scatter_index.broadcast_to(edges.shape)
+
+        # Iterate over the layers.
         for edge_updater, edge_layer_norm, node_updater, node_layer_norm in zip(
             self.edge_updaters, self.edge_layer_norms, self.node_updaters, self.node_layer_norms):
             # Update the edges.
@@ -160,13 +153,11 @@ class Processor(torch.nn.Module):
             edges_out = edge_layer_norm(edges_out)
             edges = edges + edges_out
 
-            # Aggregate the edges for each node. We do this with nodes flattened
+            # Aggregate the edges for each node. We do this with node indices flattened
             # across the batch dimension so we can use scatter_add.
             aggregated_edges = torch.zeros(nodes.shape[0]*nodes.shape[1], edges.shape[-1],
                                            device=edges.device)
-            index = neighbor_idxs[:, [0]]*nodes.shape[1] + neighbor_idxs[:, [1]]
-            index = index.broadcast_to(edges.shape)
-            aggregated_edges = aggregated_edges.scatter_add(0, index, edges)
+            aggregated_edges = aggregated_edges.scatter_add(0, scatter_index, edges)
             aggregated_edges = aggregated_edges.reshape(nodes.shape[0], nodes.shape[1], -1)
 
             # Update the nodes.
