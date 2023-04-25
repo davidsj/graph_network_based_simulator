@@ -1,5 +1,7 @@
 import numpy as np
 import torch
+import os
+from torchdata.datapipes.iter import Shuffler
 
 class Trajectory:
     """A class representing a trajectory of particle positions and materials.
@@ -26,7 +28,7 @@ class Trajectory:
         traj = np.load(path)
         return cls(traj['positions'], traj['materials'], traj['n_materials'].item())
 
-    def get_datapoints(self, n_previous_velocities):
+    def get_datapoints(self, n_previous_velocities, device=None):
         """Return a list of Datapoints consisting of position, `n_previous_velocities`
         velocities, acceleration, and material for each particle."""
         assert n_previous_velocities >= 0
@@ -45,7 +47,7 @@ class Trajectory:
             acc = accelerations[frame]
             mat = self.materials
 
-            points.append(TorchDatapoint(pos, vel, acc, mat))
+            points.append(TorchDatapoint(pos, vel, acc, mat, device=device))
         return points
 
 class TorchDatapoint:
@@ -71,3 +73,67 @@ class TorchDatapoint:
     def to(self, device):
         return TorchDatapoint(self.positions, self.velocities, self.accelerations, self.materials,
                               device=device, _move=True)
+
+class TorchDataset(torch.utils.data.IterableDataset):
+    """An iterable dataset of TorchDatapoints, with shuffle buffer support so
+    that the dataset can be (sort of) shuffled without loading all datapoints
+    into memory."""
+    def __init__(self, dataset_dir, split, n_previous_velocities=5,
+                 start_traj_idx=0, end_traj_idx=None,
+                 shuffle=False, shuffle_buffer_size=10000, device=None):
+        assert split in ['training', 'validation', 'test']
+        assert n_previous_velocities >= 0
+
+        self.dataset_dir = dataset_dir
+        self.split = split
+        self.n_previous_velocities = n_previous_velocities
+        self.shuffle = shuffle
+        self.shuffle_buffer_size = shuffle_buffer_size
+        self.device = device
+
+        # Determine number of trajectories and datapoints.
+        with open(os.path.join(dataset_dir, split, 'lengths'), 'r') as f:
+            traj_lengths = [int(l) for l in f.read().splitlines()]
+        self.start_traj_idx = start_traj_idx
+        if end_traj_idx is None:
+            self.end_traj_idx = len(traj_lengths)
+        else:
+            self.end_traj_idx = min(end_traj_idx, len(traj_lengths))
+
+        self.n_traj_datapoints = [max(0, l - n_previous_velocities - 1) for l in traj_lengths]
+        self.len = sum(self.n_traj_datapoints[start_traj_idx:end_traj_idx])
+
+    def __len__(self):
+        return self.len
+
+    def _iter_without_buffer(self):
+        # Determine the order in which to iterate over trajectories.
+        traj_idxs = list(range(self.start_traj_idx, self.end_traj_idx))
+        if self.shuffle:
+            np.random.shuffle(traj_idxs)
+
+        for traj_idx in traj_idxs:
+            if self.n_traj_datapoints[traj_idx] == 0:
+                continue
+
+            # Load the datapoints from this trajectory.
+            traj_path = os.path.join(self.dataset_dir, self.split, f'{traj_idx}.npz')
+            traj = Trajectory.load(traj_path)
+            datapoints = traj.get_datapoints(self.n_previous_velocities, device=self.device)
+
+            # Shuffle the datapoints if necessary.
+            if self.shuffle:
+                np.random.shuffle(datapoints)
+
+            # Yield the datapoints.
+            for datapoint in datapoints:
+                yield datapoint
+
+    def __iter__(self):
+        # Wrap the iterator in a Shuffler if necessary, which provides the
+        # shuffle buffer functionality.
+        if self.shuffle:
+            return Shuffler(self._iter_without_buffer(),
+                            buffer_size=self.shuffle_buffer_size).__iter__()
+        else:
+            return self._iter_without_buffer()

@@ -87,25 +87,15 @@ with open(os.path.join(outdir, 'args.json'), 'w') as f:
     json.dump(vars(args), f)
 
 # Load the training and validation data.
-def load_split(split_name, md, max_trajectories=None, shuffle=False, device=None):
-    pr(f'Loading {split_name} trajectories...')
-    split_data = []
-    if max_trajectories is None:
-        n_trajs = md[f'n_{split_name}']
-    else:
-        n_trajs = min(md[f'n_{split_name}'], max_trajectories)
-    for i in tqdm.tqdm(range(n_trajs)):
-        traj = gns.Trajectory.load(os.path.join(args.dataset_dir, split_name, f'{i}.npz'))
-        split_data += traj.get_datapoints(args.n_previous_velocities)
-    if shuffle:
-        np.random.shuffle(split_data)
-    if device is not None:
-        split_data = [datapoint.to(device) for datapoint in split_data]
-    print(f'Loaded {len(split_data)} {split_name} datapoints from {n_trajs} trajectories.')
-    return split_data
-
-train_data = load_split('training', md, args.max_training_trajectories, shuffle=True)
-val_data = load_split('validation', md, args.max_validation_trajectories, shuffle=False, device='cuda')
+device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+train_data = gns.TorchDataset(args.dataset_dir, 'training',
+                              n_previous_velocities=args.n_previous_velocities,
+                              end_traj_idx=args.max_training_trajectories,
+                              device=device, shuffle=True)
+val_data = gns.TorchDataset(args.dataset_dir, 'validation',
+                            n_previous_velocities=args.n_previous_velocities,
+                            end_traj_idx=args.max_validation_trajectories,
+                            device=device)
 
 # Define loss functions.
 def loss_fn(acc, acc_hat):
@@ -126,7 +116,6 @@ def calc_val_loss(model, val_data):
     return val_loss_sum / val_loss_n
 
 # Initialize the model, optimizer, and learning rate scheduler.
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 model = gns.GNS(md['n_materials'], md['dimensions'],
                 args.n_previous_velocities, args.connectivity_radius,
                 md['box_boundaries']).to(device)
@@ -181,7 +170,6 @@ for i, datapoint in enumerate(train_data):
         pr(f'  Step {i}: saved checkpoint.')
 
     # Train on the current datapoint.
-    datapoint = datapoint.to(device)
     loss = loss_fn(datapoint.accelerations, model(datapoint))
     opt.zero_grad()
     loss.backward()
