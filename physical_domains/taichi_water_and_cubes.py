@@ -56,6 +56,7 @@ with open(os.path.join(args.out_dir, 'metadata.json'), 'w') as f:
     md['dimensions'] = 2
     md['n_materials'] = len(MPMSolver.materials)
     md['box_boundaries'] = box_boundaries.tolist()
+    md['default_connectivity_radius'] = 0.015
     json.dump(md, f)
 
 # Create the trajectories for each dataset split.
@@ -106,3 +107,6 @@ for split in ['training', 'validation', 'test']:
         # Save the trajectory.
         traj = gns.Trajectory(np.array(positions), np.array(materials), len(MPMSolver.materials))
         traj.save(os.path.join(args.out_dir, split, f'{traj_idx}.npz'))
+
+    with open(os.path.join(args.out_dir, split, 'lengths'), 'w') as f:
+        f.write(f'{args.traj_len}\n'*n_trajs)
