@@ -189,11 +189,11 @@ class GNS(torch.nn.Module):
     def forward(self, dp):
         nodes, edges, neighbor_idxs = self.encoder(dp)
         nodes, edges, neighbor_idxs = self.processor(nodes, edges, neighbor_idxs)
-        nodes = self.decoder(nodes)
+        accelerations = self.decoder(nodes)
 
         # The modules return data with the batch dimension, so we remove it
         # if that's not how it was given to us.
         if isinstance(dp, TorchDatapoint):
-            return nodes[0]
+            return accelerations[0]
         else:
-            return nodes
+            return accelerations
