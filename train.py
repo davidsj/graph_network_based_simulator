@@ -49,6 +49,8 @@ parser.add_argument('--max_training_trajectories', type=int, default=None,
                     help='Maximum number of training trajectories to use. If None, use all.')
 parser.add_argument('--max_validation_trajectories', type=int, default=5,
                     help='Maximum number of validation trajectories to use. If None, use all.')
+parser.add_argument('--run_info', type=str, default=None,
+                    help='Additional info string to include in metadata.')
 args = parser.parse_args()
 
 # Validate arguments.
