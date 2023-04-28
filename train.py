@@ -39,7 +39,7 @@ parser.add_argument('--lr_schedule', type=str, default='triangular',
 parser.add_argument('--lr_exponential_min', type=float, default=1e-6)
 parser.add_argument('--lr_exponential_decay_factor', type=float, default=0.1)
 parser.add_argument('--lr_exponential_decay_interval', type=int, default=5000000)
-parser.add_argument('--checkpoint_interval', type=int, default=5000,
+parser.add_argument('--checkpoint_interval', type=int, default=10000,
                     help='Number of training steps between checkpoints.')
 parser.add_argument('--validation_interval', type=int, default=10000,
                     help='Number of training steps between calculating validation loss.')
@@ -85,6 +85,14 @@ while True:
 pr(f'Output directory: {outdir}')
 with open(os.path.join(outdir, 'args.json'), 'w') as f:
     json.dump(vars(args), f)
+csv_path = os.path.join(outdir, 'log.csv')
+validation_csv_path = os.path.join(outdir, 'validation_log.csv')
+with open(csv_path, 'w') as f:
+    csv_writer = csv.writer(f)
+    csv_writer.writerow(['step', 'training_loss', 'lr'])
+with open(validation_csv_path, 'w') as f:
+    csv_writer = csv.writer(f)
+    csv_writer.writerow(['step', 'validation_loss'])
 
 # Load the training and validation data.
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -99,7 +107,7 @@ val_data = gns.TorchDataset(args.dataset_dir, 'validation',
 
 # Define loss functions.
 def loss_fn(acc, acc_hat):
-    return (acc_hat - acc).square().sum(axis=1).mean()
+    return (acc_hat - acc).square().sum(axis=-1).mean()
 
 def calc_val_loss(model, val_data):
     pr('Calculating validation loss...')
@@ -109,8 +117,10 @@ def calc_val_loss(model, val_data):
     val_loss_n = 0
     with torch.no_grad():
         for datapoint in tqdm.tqdm(val_data):
-            loss = loss_fn(datapoint.accelerations, model(datapoint))
-            val_loss_sum += loss.item()
+            acc_hat = model(datapoint)
+            loss = loss_fn(datapoint.accelerations, acc_hat)
+            loss = loss.item()
+            val_loss_sum += loss
             val_loss_n += 1
     model.train(prev_model_training_state)
     return val_loss_sum / val_loss_n
@@ -134,18 +144,9 @@ else:
 # Train the model.
 pr('Training...')
 model.train()
+
 training_loss_sum = 0.0
 training_loss_n = 0
-
-csv_path = os.path.join(outdir, 'log.csv')
-validation_csv_path = os.path.join(outdir, 'validation_log.csv')
-with open(csv_path, 'w') as f:
-    csv_writer = csv.writer(f)
-    csv_writer.writerow(['step', 'training_loss', 'lr'])
-with open(validation_csv_path, 'w') as f:
-    csv_writer = csv.writer(f)
-    csv_writer.writerow(['step', 'validation_loss'])
-
 for i, datapoint in enumerate(train_data):
     # Record training loss.
     if training_loss_n == args.log_record_interval:
@@ -170,7 +171,8 @@ for i, datapoint in enumerate(train_data):
         pr(f'  Step {i}: saved checkpoint.')
 
     # Train on the current datapoint.
-    loss = loss_fn(datapoint.accelerations, model(datapoint))
+    acc_hat = model(datapoint)
+    loss = loss_fn(datapoint.accelerations, acc_hat)
     opt.zero_grad()
     loss.backward()
     opt.step()

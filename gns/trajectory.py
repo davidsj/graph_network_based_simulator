@@ -8,9 +8,7 @@ class Trajectory:
 
     Assumes no particles are created or destroyed after the first frame."""
     def __init__(self, positions, materials, n_materials):
-        self.len = positions.shape[0]
-        self.n_particles = positions.shape[1]
-        self.dim = positions.shape[2]
+        self.len, self.n_particles, self.dim = positions.shape
 
         assert materials.shape[0] == self.n_particles
         assert materials.min() >= 0
@@ -42,7 +40,7 @@ class Trajectory:
         points = []
         for frame in range(n_previous_velocities, self.len-1):
             pos = self.positions[frame]
-            vel = np.concatenate([velocities[frame-i] for i in range(n_previous_velocities-1, -1, -1)], axis=1)
+            vel = np.concatenate([velocities[i] for i in range(frame-n_previous_velocities+1, frame+1)], axis=1)
             vel = vel.reshape((self.n_particles, n_previous_velocities, self.dim))
             acc = accelerations[frame]
             mat = self.materials
@@ -61,13 +59,19 @@ class TorchDatapoint:
             # In this case, the arguments should all be torch tensors.
             self.positions = positions.to(device)
             self.velocities = velocities.to(device)
-            self.accelerations = accelerations.to(device)
+            if accelerations is None:
+                self.accelerations = None
+            else:
+                self.accelerations = accelerations.to(device)
             self.materials = materials.to(device)
         else:
             # In this case, the arguments should all be numpy arrays.
             self.positions = torch.tensor(positions, dtype=torch.float32, device=device)
             self.velocities = torch.tensor(velocities, dtype=torch.float32, device=device)
-            self.accelerations = torch.tensor(accelerations, dtype=torch.float32, device=device)
+            if accelerations is None:
+                self.accelerations = None
+            else:
+                self.accelerations = torch.tensor(accelerations, dtype=torch.float32, device=device)
             self.materials = torch.tensor(materials, dtype=torch.int64, device=device)
 
     def to(self, device):

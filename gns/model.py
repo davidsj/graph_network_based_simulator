@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from .trajectory import TorchDatapoint
+from .trajectory import Trajectory, TorchDatapoint
 
 class MLP(torch.nn.Module):
     """Shared MLP architecture for encoder, processor, and decoder."""
@@ -88,7 +88,7 @@ class Encoder(torch.nn.Module):
 
         # Concatenate the velocities, materials, and (if present) distance
         # to orthogonal walls, clipped to `connectivity_radius`.
-        velocities = vel.reshape(n_datapoints, n_particles, -1)
+        velocities = vel.view(n_datapoints, n_particles, -1)
         node_features = torch.cat([velocities, materials], dim=-1)
         if self.box_boundaries is not None:
             wall_dist = torch.zeros(n_datapoints, n_particles, self.physical_dim, 2,
@@ -97,15 +97,15 @@ class Encoder(torch.nn.Module):
                 wall_dist[:, :, i, 0] = pos[:, :, i] - self.box_boundaries[i][0]
                 wall_dist[:, :, i, 1] = self.box_boundaries[i][1] - pos[:, :, i]
             wall_dist = torch.clamp(wall_dist, min=0.0, max=self.connectivity_radius)
-            wall_dist = wall_dist.reshape(n_datapoints, n_particles, -1)
+            wall_dist = wall_dist.view(n_datapoints, n_particles, -1)
             node_features = torch.cat([node_features, wall_dist], dim=-1)
         nodes = self.node_encoder(node_features)
 
         # Identify neighbors.
         # We do this using brute force on the GPU rather than using a k-d tree
         # on the CPU, as it's about 20x as fast (tested on 2.95k particles).
-        left = pos.reshape(n_datapoints, -1, 1, self.physical_dim)
-        right = pos.reshape(n_datapoints, 1, -1, self.physical_dim)
+        left = pos.view(n_datapoints, -1, 1, self.physical_dim)
+        right = pos.view(n_datapoints, 1, -1, self.physical_dim)
         mask = (left - right).square().sum(dim=-1) < self.connectivity_radius**2
         mask.diagonal(dim1=1, dim2=2).fill_(False) # don't connect to self
         neighbor_idxs = mask.nonzero()
@@ -159,8 +159,8 @@ class Processor(torch.nn.Module):
             # across the batch dimension so we can use scatter_add.
             aggregated_edges = torch.zeros(nodes.shape[0]*nodes.shape[1], edges.shape[-1],
                                            device=edges.device)
-            aggregated_edges = aggregated_edges.scatter_add(0, scatter_index, edges)
-            aggregated_edges = aggregated_edges.reshape(nodes.shape[0], nodes.shape[1], -1)
+            aggregated_edges.scatter_add_(0, scatter_index, edges)
+            aggregated_edges = aggregated_edges.view(*nodes.shape[:2], -1)
 
             # Update the nodes.
             nodes_out = node_updater(torch.cat([aggregated_edges, nodes], dim=-1))
