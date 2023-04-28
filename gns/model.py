@@ -38,7 +38,8 @@ class Encoder(torch.nn.Module):
     excluding acceleration (which is the prediction target)."""
     def __init__(self, n_materials, physical_dim, n_previous_velocities,
                  connectivity_radius, box_boundaries=None,
-                 material_embedding_dim=16, node_embedding_dim=128, edge_embedding_dim=128):
+                 material_embedding_dim=16, node_embedding_dim=128, edge_embedding_dim=128,
+                 self_edges=True):
         super().__init__()
         assert n_previous_velocities >= 0
         assert connectivity_radius >= 0
@@ -48,6 +49,7 @@ class Encoder(torch.nn.Module):
         self.n_previous_velocities = n_previous_velocities
         self.connectivity_radius = connectivity_radius
         self.box_boundaries = box_boundaries
+        self.self_edges = self_edges
 
         # Materials are embedded from a one-hot representation.
         self.material_encoder = torch.nn.Linear(n_materials, material_embedding_dim)
@@ -96,9 +98,10 @@ class Encoder(torch.nn.Module):
             for i in range(self.physical_dim):
                 wall_dist[:, :, i, 0] = pos[:, :, i] - self.box_boundaries[i][0]
                 wall_dist[:, :, i, 1] = self.box_boundaries[i][1] - pos[:, :, i]
-            wall_dist = torch.clamp(wall_dist, min=0.0, max=self.connectivity_radius)
             wall_dist = wall_dist.view(n_datapoints, n_particles, -1)
-            node_features = torch.cat([node_features, wall_dist], dim=-1)
+            normalized_wall_dist = torch.clamp(wall_dist/self.connectivity_radius,
+                                               min=-1.0, max=1.0)
+            node_features = torch.cat([node_features, normalized_wall_dist], dim=-1)
         nodes = self.node_encoder(node_features)
 
         # Identify neighbors.
@@ -107,15 +110,16 @@ class Encoder(torch.nn.Module):
         left = pos.view(n_datapoints, -1, 1, self.physical_dim)
         right = pos.view(n_datapoints, 1, -1, self.physical_dim)
         mask = (left - right).square().sum(dim=-1) < self.connectivity_radius**2
-        mask.diagonal(dim1=1, dim2=2).fill_(False) # don't connect to self
+        if not self.self_edges:
+            mask.diagonal(dim1=1, dim2=2).fill_(False)
         neighbor_idxs = mask.nonzero()
 
         # Encode the edges for each pair of neighbors.
         receiver_pos = pos[neighbor_idxs[:, 0], neighbor_idxs[:, 1]]
         sender_pos = pos[neighbor_idxs[:, 0], neighbor_idxs[:, 2]]
-        relative_positions = receiver_pos - sender_pos
-        distances = torch.norm(relative_positions, dim=1, keepdim=True)
-        edge_features = torch.cat([relative_positions, distances], dim=1)
+        normalized_displacements = (receiver_pos - sender_pos)/self.connectivity_radius
+        distances = torch.norm(normalized_displacements, dim=1, keepdim=True)
+        edge_features = torch.cat([normalized_displacements, distances], dim=1)
         edges = self.edge_encoder(edge_features)
 
         return nodes, edges, neighbor_idxs
@@ -153,18 +157,20 @@ class Processor(torch.nn.Module):
             senders = nodes[neighbor_idxs[:, 0], neighbor_idxs[:, 2]]
             edges_out = edge_updater(torch.cat([edges, receivers, senders], dim=-1))
             edges_out = edge_layer_norm(edges_out)
-            edges = edges + edges_out
 
             # Aggregate the edges for each node. We do this with node indices flattened
             # across the batch dimension so we can use scatter_add.
-            aggregated_edges = torch.zeros(nodes.shape[0]*nodes.shape[1], edges.shape[-1],
-                                           device=edges.device)
-            aggregated_edges.scatter_add_(0, scatter_index, edges)
+            aggregated_edges = torch.zeros(nodes.shape[0]*nodes.shape[1], edges_out.shape[-1],
+                                           device=edges_out.device)
+            aggregated_edges.scatter_add_(0, scatter_index, edges_out)
             aggregated_edges = aggregated_edges.view(*nodes.shape[:2], -1)
 
             # Update the nodes.
             nodes_out = node_updater(torch.cat([aggregated_edges, nodes], dim=-1))
             nodes_out = node_layer_norm(nodes_out)
+
+            # Residual connection.
+            edges = edges + edges_out
             nodes = nodes + nodes_out
 
         return nodes, edges, neighbor_idxs
