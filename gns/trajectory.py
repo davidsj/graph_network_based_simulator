@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import os
-from torchdata.datapipes.iter import Shuffler
+from torchdata.datapipes.iter import Batcher, Shuffler
 
 class Trajectory:
     """A class representing a trajectory of particle positions and materials.
@@ -93,18 +93,20 @@ class TorchDataset(torch.utils.data.IterableDataset):
     into memory."""
     def __init__(self, dataset_dir, split,
                  n_previous_velocities=5, cum_vel_noise_std=0.0,
-                 start_traj_idx=0, end_traj_idx=None,
+                 start_traj_idx=0, end_traj_idx=None, batch_size=1,
                  shuffle=False, shuffle_buffer_size=10000, device=None):
         assert split in ['training', 'validation', 'test']
         assert n_previous_velocities >= 0
         assert cum_vel_noise_std >= 0.0
         if split != 'training':
             assert cum_vel_noise_std == 0.0
+        assert batch_size >= 1
 
         self.dataset_dir = dataset_dir
         self.split = split
         self.cum_vel_noise_std = cum_vel_noise_std
         self.n_previous_velocities = n_previous_velocities
+        self.batch_size = batch_size
         self.shuffle = shuffle
         self.shuffle_buffer_size = shuffle_buffer_size
         self.device = device
@@ -119,12 +121,13 @@ class TorchDataset(torch.utils.data.IterableDataset):
             self.end_traj_idx = min(end_traj_idx, len(traj_lengths))
 
         self.n_traj_datapoints = [max(0, l - n_previous_velocities - 1) for l in traj_lengths]
-        self.len = sum(self.n_traj_datapoints[start_traj_idx:end_traj_idx])
+        self.len = int(np.ceil(sum(self.n_traj_datapoints[start_traj_idx:end_traj_idx])
+                               / batch_size))
 
     def __len__(self):
         return self.len
 
-    def _iter_without_buffer(self):
+    def _base_iter(self):
         # Determine the order in which to iterate over trajectories.
         traj_idxs = list(range(self.start_traj_idx, self.end_traj_idx))
         if self.shuffle:
@@ -151,8 +154,10 @@ class TorchDataset(torch.utils.data.IterableDataset):
     def __iter__(self):
         # Wrap the iterator in a Shuffler if necessary, which provides the
         # shuffle buffer functionality.
+        #
+        # Then wrap it in a Batcher.
+        iter = self._base_iter()
         if self.shuffle:
-            return Shuffler(self._iter_without_buffer(),
-                            buffer_size=self.shuffle_buffer_size).__iter__()
-        else:
-            return self._iter_without_buffer()
+            iter = Shuffler(iter, buffer_size=self.shuffle_buffer_size).__iter__()
+        iter = Batcher(iter, batch_size=self.batch_size).__iter__()
+        return iter

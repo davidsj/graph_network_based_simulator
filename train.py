@@ -51,6 +51,8 @@ parser.add_argument('--validation_interval', type=int, default=10000,
                     help='Number of training steps between calculating validation loss.')
 parser.add_argument('--log_record_interval', type=int, default=100,
                     help='Number of training steps between training log records.')
+parser.add_argument('--training_batch_size', type=int, default=1)
+parser.add_argument('--validation_batch_size', type=int, default=1)
 parser.add_argument('--max_training_trajectories', type=int, default=None,
                     help='Maximum number of training trajectories to use. If None, use all.')
 parser.add_argument('--max_validation_trajectories', type=int, default=5,
@@ -72,6 +74,8 @@ assert args.lr_exponential_decay_interval > 0
 assert args.checkpoint_interval > 0
 assert args.validation_interval > 0
 assert args.log_record_interval > 0
+assert args.training_batch_size > 0
+assert args.validation_batch_size > 0
 assert args.max_training_trajectories is None or args.max_training_trajectories >= 0
 assert args.max_validation_trajectories is None or args.max_validation_trajectories > 0
 
@@ -109,10 +113,12 @@ train_data = gns.TorchDataset(args.dataset_dir, 'training',
                               n_previous_velocities=args.n_previous_velocities,
                               cum_vel_noise_std=args.cum_velocity_noise_std,
                               end_traj_idx=args.max_training_trajectories,
+                              batch_size=args.training_batch_size,
                               device=device, shuffle=True)
 val_data = gns.TorchDataset(args.dataset_dir, 'validation',
                             n_previous_velocities=args.n_previous_velocities,
                             end_traj_idx=args.max_validation_trajectories,
+                            batch_size=args.validation_batch_size,
                             device=device)
 
 # Define loss functions.
@@ -120,19 +126,26 @@ def loss_fn(acc, acc_hat):
     return (acc_hat - acc).square().sum(axis=-1).mean()
 
 def calc_val_loss(model, val_data):
-    pr('Calculating validation loss...')
+    # Batch (hence buffer) sizes might be different for training and
+    # validation, so we empty the cache before and after to free up
+    # memory for other processes.
+    torch.cuda.empty_cache()
     prev_model_training_state = model.training
     model.eval()
+
+    pr('Calculating validation loss...')
     val_loss_sum = 0.0
     val_loss_n = 0
     with torch.no_grad():
-        for datapoint in tqdm.tqdm(val_data):
-            acc_hat = model(datapoint)
-            loss = loss_fn(datapoint.target_accelerations, acc_hat)
-            loss = loss.item()
-            val_loss_sum += loss
-            val_loss_n += 1
+        for dps in tqdm.tqdm(val_data):
+            acc_hat = model(dps)
+            acc = torch.stack([dp.target_accelerations for dp in dps])
+            loss = loss_fn(acc, acc_hat).item()
+            val_loss_sum += len(dps) * loss
+            val_loss_n += len(dps)
+
     model.train(prev_model_training_state)
+    torch.cuda.empty_cache()
     return val_loss_sum / val_loss_n
 
 # Initialize the model, optimizer, and learning rate scheduler.
@@ -158,7 +171,7 @@ model.train()
 
 training_loss_sum = 0.0
 training_loss_n = 0
-for i, datapoint in enumerate(train_data):
+for i, dps in enumerate(train_data):
     # Record training loss.
     if training_loss_n == args.log_record_interval:
         avg_training_loss = training_loss_sum / training_loss_n
@@ -181,9 +194,10 @@ for i, datapoint in enumerate(train_data):
         torch.save(model.state_dict(), os.path.join(outdir, f'checkpoint-{i}.pt'))
         pr(f'  Step {i}: saved checkpoint.')
 
-    # Train on the current datapoint.
-    acc_hat = model(datapoint)
-    loss = loss_fn(datapoint.target_accelerations, acc_hat)
+    # Train on the current batch.
+    acc_hat = model(dps)
+    acc = torch.stack([dp.target_accelerations for dp in dps])
+    loss = loss_fn(acc, acc_hat)
     opt.zero_grad()
     loss.backward()
     opt.step()
