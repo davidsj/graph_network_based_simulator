@@ -129,8 +129,8 @@ def calc_val_loss(model, val_data):
 
 # Initialize the model, optimizer, and learning rate scheduler.
 model = gns.GNS(md['n_materials'], md['dimensions'],
-                args.n_previous_velocities, args.connectivity_radius,
-                md['box_boundaries']).to(device)
+                args.n_previous_velocities, args.connectivity_radius, md['training_stats'],
+                box_boundaries=md['box_boundaries']).to(device)
 if args.optimizer == 'Adam':
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
 elif args.optimizer == 'AdamW':

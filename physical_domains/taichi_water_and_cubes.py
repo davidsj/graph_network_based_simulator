@@ -64,6 +64,12 @@ for split in ['training', 'validation', 'test']:
     n_trajs = args.__dict__[f'n_{split}']
     os.makedirs(os.path.join(args.out_dir, split))
 
+    vel_sum = np.zeros(2)
+    acc_sum = np.zeros(2)
+    vel_sq_sum = np.zeros(2)
+    acc_sq_sum = np.zeros(2)
+    vel_n = 0
+    acc_n = 0
     for traj_idx in range(n_trajs):
         positions = []
 
@@ -107,6 +113,27 @@ for split in ['training', 'validation', 'test']:
         # Save the trajectory.
         traj = gns.Trajectory(np.array(positions), np.array(materials), len(MPMSolver.materials))
         traj.save(os.path.join(args.out_dir, split, f'{traj_idx}.npz'))
+
+        # Compute statistics.
+        vel = traj.positions[1:] - traj.positions[:-1]
+        acc = vel[1:] - vel[:-1]
+        vel_sum += vel.sum(axis=(0, 1))
+        acc_sum += acc.sum(axis=(0, 1))
+        vel_sq_sum += np.square(vel).sum(axis=(0, 1))
+        acc_sq_sum += np.square(acc).sum(axis=(0, 1))
+        vel_n += vel.size
+        acc_n += acc.size
+
+    # Write training statistics.
+    if split == 'training':
+        vel_mean = vel_sum/vel_n
+        acc_mean = acc_sum/acc_n
+        vel_std = np.sqrt(vel_sq_sum/vel_n - np.square(vel_mean))
+        acc_std = np.sqrt(acc_sq_sum/acc_n - np.square(acc_mean))
+        md['training_stats'] = {'vel': {'mean': vel_mean.tolist(), 'std': vel_std.tolist()},
+                                'acc': {'mean': acc_mean.tolist(), 'std': acc_std.tolist()}}
+        with open(os.path.join(args.out_dir, 'metadata.json'), 'w') as f:
+            json.dump(md, f)
 
     with open(os.path.join(args.out_dir, split, 'lengths'), 'w') as f:
         f.write(f'{args.traj_len}\n'*n_trajs)

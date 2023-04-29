@@ -37,7 +37,7 @@ class Encoder(torch.nn.Module):
     """Encodes a datapoint into the appropriate graph representation,
     excluding acceleration (which is the prediction target)."""
     def __init__(self, n_materials, physical_dim, n_previous_velocities,
-                 connectivity_radius, box_boundaries=None,
+                 connectivity_radius, vel_stats, box_boundaries=None,
                  material_embedding_dim=16, node_embedding_dim=128, edge_embedding_dim=128,
                  self_edges=True):
         super().__init__()
@@ -48,6 +48,8 @@ class Encoder(torch.nn.Module):
         self.physical_dim = physical_dim
         self.n_previous_velocities = n_previous_velocities
         self.connectivity_radius = connectivity_radius
+        self.register_buffer('vel_mean', torch.tensor(vel_stats['mean']))
+        self.register_buffer('vel_std', torch.tensor(vel_stats['std']))
         self.box_boundaries = box_boundaries
         self.self_edges = self_edges
 
@@ -83,6 +85,9 @@ class Encoder(torch.nn.Module):
         vel = torch.stack([dp.velocities for dp in dps]) # N x P x V x D
         n_datapoints, n_particles = mat.shape
         device = mat.device
+
+        # Normalize velocities.
+        vel = (vel - self.vel_mean) / self.vel_std
 
         # Make a one-hot representation of the materials, then embed them.
         materials = torch.nn.functional.one_hot(mat, self.n_materials).to(torch.float32)
@@ -177,20 +182,30 @@ class Processor(torch.nn.Module):
 
 class Decoder(MLP):
     """Decodes graph node output into predicted acceleration."""
-    def __init__(self, physical_dim, node_embedding_dim=128):
+    def __init__(self, physical_dim, acc_stats, node_embedding_dim=128):
         super().__init__(node_embedding_dim, physical_dim)
+        self.register_buffer('acc_mean', torch.tensor(acc_stats['mean']))
+        self.register_buffer('acc_std', torch.tensor(acc_stats['std']))
+
+    def forward(self, nodes):
+        acc = super().forward(nodes)
+        # De-normalize.
+        acc = self.acc_mean + acc*self.acc_std
+        return acc
 
 class GNS(torch.nn.Module):
     """Graph network-based simulator for predicting particle acceleration,
     composed of an Encoder, Processor, and Decoder."""
     def __init__(self, n_materials, physical_dim, n_previous_velocities,
-                 connectivity_radius, box_boundaries=None,
+                 connectivity_radius, normalization_stats, box_boundaries=None,
                  n_processor_layers=10):
         super().__init__()
+
         self.encoder = Encoder(n_materials, physical_dim, n_previous_velocities,
-                               connectivity_radius, box_boundaries=box_boundaries)
+                               connectivity_radius, normalization_stats['vel'],
+                               box_boundaries=box_boundaries)
         self.processor = Processor(n_layers=n_processor_layers)
-        self.decoder = Decoder(physical_dim)
+        self.decoder = Decoder(physical_dim, normalization_stats['acc'])
 
     def forward(self, dp):
         nodes, edges, neighbor_idxs = self.encoder(dp)
