@@ -158,10 +158,12 @@ if args.optimizer == 'Adam':
 elif args.optimizer == 'AdamW':
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
 if args.lr_schedule == 'triangular':
-    sched = torch.optim.lr_scheduler.CyclicLR(opt, 0., args.lr, step_size_up=len(train_data)//2, cycle_momentum=False)
+    sched = torch.optim.lr_scheduler.CyclicLR(opt, 0., args.lr, cycle_momentum=False,
+                                              step_size_up=np.ceil(len(train_data)/2))
 elif args.lr_schedule == 'exponential_plus_constant':
     sched = gns.ExponentialPlusConstantLR(opt, args.lr, args.lr_exponential_min,
-                                          args.lr_exponential_decay_factor, args.lr_exponential_decay_interval)
+                                          args.lr_exponential_decay_factor,
+                                          args.lr_exponential_decay_interval)
 else:
     sched = None
 
