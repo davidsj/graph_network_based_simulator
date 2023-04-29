@@ -9,9 +9,11 @@ import tqdm
 
 import gns
 
+def nowstr():
+    return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+
 def pr(*x):
-    datestr = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-    print(datestr, *x)
+    print(nowstr(), *x)
 
 # Parse arguments.
 parser = argparse.ArgumentParser()
@@ -19,22 +21,26 @@ parser.add_argument('dataset_dir', type=str,
                     help='Directory containing the dataset. The --out_dir argument '
                          'used to generate the dataset should be passed here.')
 parser.add_argument('--connectivity_radius', type=float,
-                    help='Maximum distance for particles to be considered neighbors.'
-                         'If not specified, the default value for the dataset will be'
+                    help='Maximum distance for particles to be considered neighbors. '
+                         'If not specified, the default value for the dataset will be '
                          'used.')
 parser.add_argument('--n_previous_velocities', type=int, default=5,
-                    help='Number of previous velocities to use as features'
+                    help='Number of previous velocities to use as features '
                          'for each particle.')
+parser.add_argument('--cum_velocity_noise_std', type=float, default=0.0003,
+                    help='Standard deviation of cumulative noise in each dimension '
+                         'of the velocity of each particle. Added during training '
+                         'to help the model be robust to accumulated rollout error.')
 parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'AdamW'])
 parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate.')
 parser.add_argument('--lr_schedule', type=str, default='triangular',
                     choices=['constant', 'triangular', 'exponential_plus_constant'],
                     help='Learning rate schedule. If triangular, the learning rate will be '
                          'increased linearly from 0 to --lr over the first half of '
-                         'training, then decreased linearly to 0 over the second half.'
-                         'If exponential_plus_constant, the learning rate will decay from'
-                         '--lr to --lr_exponential_min, with the delta above'
-                         '--lr_exponential_min decreasing continuously by a factor of'
+                         'training, then decreased linearly to 0 over the second half. '
+                         'If exponential_plus_constant, the learning rate will decay from '
+                         '--lr to --lr_exponential_min, with the delta above '
+                         '--lr_exponential_min decreasing continuously by a factor of '
                          '--lr_exponential_decay_factor every --lr_exponential_decay_interval steps.')
 parser.add_argument('--lr_exponential_min', type=float, default=1e-6)
 parser.add_argument('--lr_exponential_decay_factor', type=float, default=0.1)
@@ -56,6 +62,7 @@ args = parser.parse_args()
 # Validate arguments.
 assert os.path.exists(args.dataset_dir)
 assert args.n_previous_velocities >= 0
+assert args.cum_velocity_noise_std >= 0.0
 if args.connectivity_radius is not None:
     assert args.connectivity_radius >= 0.0
 assert args.lr > 0.0
@@ -91,7 +98,7 @@ csv_path = os.path.join(outdir, 'log.csv')
 validation_csv_path = os.path.join(outdir, 'validation_log.csv')
 with open(csv_path, 'w') as f:
     csv_writer = csv.writer(f)
-    csv_writer.writerow(['step', 'training_loss', 'lr'])
+    csv_writer.writerow(['step', 'timestamp', 'training_loss', 'lr'])
 with open(validation_csv_path, 'w') as f:
     csv_writer = csv.writer(f)
     csv_writer.writerow(['step', 'validation_loss'])
@@ -100,6 +107,7 @@ with open(validation_csv_path, 'w') as f:
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 train_data = gns.TorchDataset(args.dataset_dir, 'training',
                               n_previous_velocities=args.n_previous_velocities,
+                              cum_vel_noise_std=args.cum_velocity_noise_std,
                               end_traj_idx=args.max_training_trajectories,
                               device=device, shuffle=True)
 val_data = gns.TorchDataset(args.dataset_dir, 'validation',
@@ -120,7 +128,7 @@ def calc_val_loss(model, val_data):
     with torch.no_grad():
         for datapoint in tqdm.tqdm(val_data):
             acc_hat = model(datapoint)
-            loss = loss_fn(datapoint.accelerations, acc_hat)
+            loss = loss_fn(datapoint.target_accelerations, acc_hat)
             loss = loss.item()
             val_loss_sum += loss
             val_loss_n += 1
@@ -129,7 +137,8 @@ def calc_val_loss(model, val_data):
 
 # Initialize the model, optimizer, and learning rate scheduler.
 model = gns.GNS(md['n_materials'], md['dimensions'],
-                args.n_previous_velocities, args.connectivity_radius, md['training_stats'],
+                args.n_previous_velocities, args.connectivity_radius,
+                md['training_stats'], args.cum_velocity_noise_std,
                 box_boundaries=md['box_boundaries']).to(device)
 if args.optimizer == 'Adam':
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -157,7 +166,7 @@ for i, datapoint in enumerate(train_data):
         pr(f'  Step {i}: avg training loss = {avg_training_loss:.3e} lr = {lr}')
         with open(csv_path, 'a') as f:
             csv_writer = csv.writer(f)
-            csv_writer.writerow([i, avg_training_loss, lr])
+            csv_writer.writerow([i, nowstr(), avg_training_loss, lr])
         training_loss_sum = 0.0
         training_loss_n = 0
     # Record validation loss.
@@ -174,7 +183,7 @@ for i, datapoint in enumerate(train_data):
 
     # Train on the current datapoint.
     acc_hat = model(datapoint)
-    loss = loss_fn(datapoint.accelerations, acc_hat)
+    loss = loss_fn(datapoint.target_accelerations, acc_hat)
     opt.zero_grad()
     loss.backward()
     opt.step()
@@ -192,7 +201,7 @@ if training_loss_n > 0:
     pr(f'  Step {len(train_data)}: final avg training loss = {avg_training_loss:.3e} lr = {lr}')
 with open(csv_path, 'a') as f:
     csv_writer = csv.writer(f)
-    csv_writer.writerow([len(train_data), avg_training_loss, lr])
+    csv_writer.writerow([len(train_data), nowstr(), avg_training_loss, lr])
 # Record the final validation loss.
 val_loss = calc_val_loss(model, val_data)
 pr(f'  Step {len(train_data)}: final validation loss = {val_loss:.3e}')

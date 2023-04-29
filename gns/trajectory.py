@@ -26,70 +26,84 @@ class Trajectory:
         traj = np.load(path)
         return cls(traj['positions'], traj['materials'], traj['n_materials'].item())
 
-    def get_datapoints(self, n_previous_velocities, device=None):
-        """Return a list of Datapoints consisting of position, `n_previous_velocities`
-        velocities, acceleration, and material for each particle."""
+    def get_datapoints(self, n_previous_velocities, cum_vel_noise_std=0.0, device=None):
+        """Return a list of TorchDatapoints consisting of material, position,
+        `n_previous_velocities` velocities, and target acceleration for each particle."""
         assert n_previous_velocities >= 0
+        assert cum_vel_noise_std >= 0.0
 
-        # Compute velocities and accelerations.
-        velocities = np.zeros_like(self.positions)
-        velocities[1:] = self.positions[1:] - self.positions[:-1] # v_t = p_t - p_{t-1}
-        accelerations = np.zeros_like(self.positions)
-        accelerations[1:-1] = velocities[2:] - velocities[1:-1] # a_t = v_{t+1} - v_t
+        materials = torch.tensor(self.materials, dtype=torch.int64, device=device)
+        positions = torch.tensor(self.positions, dtype=torch.float32, device=device)
+
+        # Compute velocities and target accelerations.
+        velocities = torch.zeros_like(positions)
+        velocities[1:] = positions[1:] - positions[:-1] # v_t = p_t - p_{t-1}
+        target_accelerations = torch.zeros_like(positions)
+        target_accelerations[1:-1] = velocities[2:] - velocities[1:-1] # a_t = v_{t+1} - v_t
+
+        if cum_vel_noise_std > 0.0:
+            # Add noise to velocities and positions.
+            n_noise_steps = velocities.shape[0] - 1
+            noise_step_std = cum_vel_noise_std / np.sqrt(n_noise_steps)
+            vel_noise = torch.randn_like(velocities) * noise_step_std
+            vel_noise[0] = 0.0
+
+            cum_vel_noise = torch.cumsum(vel_noise, dim=0)
+            cum_pos_noise = torch.cumsum(cum_vel_noise, dim=0)
+            velocities += cum_vel_noise
+            positions += cum_pos_noise
+
+            # Adjust target accelerations to remove the accumulated noise.
+            target_accelerations[1:-1] -= cum_vel_noise[1:-1]
 
         points = []
         for frame in range(n_previous_velocities, self.len-1):
-            pos = self.positions[frame]
-            vel = np.concatenate([velocities[i] for i in range(frame-n_previous_velocities+1, frame+1)], axis=1)
-            vel = vel.reshape((self.n_particles, n_previous_velocities, self.dim))
-            acc = accelerations[frame]
-            mat = self.materials
+            pos = positions[frame]
+            vel = velocities[frame-n_previous_velocities+1:frame+1].transpose(0, 1)
+            acc = target_accelerations[frame]
 
-            points.append(TorchDatapoint(pos, vel, acc, mat, device=device))
+            points.append(TorchDatapoint(materials, pos, vel, acc, device=device))
         return points
 
 class TorchDatapoint:
-    """A class representing a single datapoint consisting of position, velocity,
-    acceleration, and material for a single frame of a trajectory, all as torch
+    """A class representing a single datapoint consisting of material, position,
+    velocity, and target acceleration for a single frame of a trajectory, all as torch
     tensors.
-    """
-    def __init__(self, positions, velocities, accelerations, materials,
-                 device=None, _move=False):
-        if _move:
-            # In this case, the arguments should all be torch tensors.
-            self.positions = positions.to(device)
-            self.velocities = velocities.to(device)
-            if accelerations is None:
-                self.accelerations = None
-            else:
-                self.accelerations = accelerations.to(device)
-            self.materials = materials.to(device)
+
+    The position and velocity potentially contain accumulated noise, in which case the
+    target acceleration includes a component necessary to eliminate the noise
+    accumulated up to that frame, so that the model learns to be robust to accumulated
+    rollout error."""
+    def __init__(self, materials, positions, velocities, target_accelerations=None, device=None):
+        self.materials = materials.to(device)
+        self.positions = positions.to(device)
+        self.velocities = velocities.to(device)
+        if target_accelerations is None:
+            self.target_accelerations = None
         else:
-            # In this case, the arguments should all be numpy arrays.
-            self.positions = torch.tensor(positions, dtype=torch.float32, device=device)
-            self.velocities = torch.tensor(velocities, dtype=torch.float32, device=device)
-            if accelerations is None:
-                self.accelerations = None
-            else:
-                self.accelerations = torch.tensor(accelerations, dtype=torch.float32, device=device)
-            self.materials = torch.tensor(materials, dtype=torch.int64, device=device)
+            self.target_accelerations = target_accelerations.to(device)
 
     def to(self, device):
-        return TorchDatapoint(self.positions, self.velocities, self.accelerations, self.materials,
-                              device=device, _move=True)
+        return TorchDatapoint(self.materials, self.positions, self.velocities,
+                              self.target_accelerations, device=device)
 
 class TorchDataset(torch.utils.data.IterableDataset):
     """An iterable dataset of TorchDatapoints, with shuffle buffer support so
     that the dataset can be (sort of) shuffled without loading all datapoints
     into memory."""
-    def __init__(self, dataset_dir, split, n_previous_velocities=5,
+    def __init__(self, dataset_dir, split,
+                 n_previous_velocities=5, cum_vel_noise_std=0.0,
                  start_traj_idx=0, end_traj_idx=None,
                  shuffle=False, shuffle_buffer_size=10000, device=None):
         assert split in ['training', 'validation', 'test']
         assert n_previous_velocities >= 0
+        assert cum_vel_noise_std >= 0.0
+        if split != 'training':
+            assert cum_vel_noise_std == 0.0
 
         self.dataset_dir = dataset_dir
         self.split = split
+        self.cum_vel_noise_std = cum_vel_noise_std
         self.n_previous_velocities = n_previous_velocities
         self.shuffle = shuffle
         self.shuffle_buffer_size = shuffle_buffer_size
@@ -123,7 +137,8 @@ class TorchDataset(torch.utils.data.IterableDataset):
             # Load the datapoints from this trajectory.
             traj_path = os.path.join(self.dataset_dir, self.split, f'{traj_idx}.npz')
             traj = Trajectory.load(traj_path)
-            datapoints = traj.get_datapoints(self.n_previous_velocities, device=self.device)
+            datapoints = traj.get_datapoints(self.n_previous_velocities, self.cum_vel_noise_std,
+                                             device=self.device)
 
             # Shuffle the datapoints if necessary.
             if self.shuffle:
