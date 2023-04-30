@@ -53,6 +53,7 @@ parser.add_argument('--log_record_interval', type=int, default=100,
                     help='Number of training steps between training log records.')
 parser.add_argument('--training_batch_size', type=int, default=1)
 parser.add_argument('--validation_batch_size', type=int, default=1)
+parser.add_argument('--n_epochs', type=int, default=1)
 parser.add_argument('--max_training_trajectories', type=int, default=None,
                     help='Maximum number of training trajectories to use. If None, use all.')
 parser.add_argument('--max_validation_trajectories', type=int, default=5,
@@ -76,6 +77,7 @@ assert args.validation_interval > 0
 assert args.log_record_interval > 0
 assert args.training_batch_size > 0
 assert args.validation_batch_size > 0
+assert args.n_epochs >= 0
 assert args.max_training_trajectories is None or args.max_training_trajectories >= 0
 assert args.max_validation_trajectories is None or args.max_validation_trajectories > 0
 
@@ -102,10 +104,10 @@ csv_path = os.path.join(outdir, 'log.csv')
 validation_csv_path = os.path.join(outdir, 'validation_log.csv')
 with open(csv_path, 'w') as f:
     csv_writer = csv.writer(f)
-    csv_writer.writerow(['step', 'timestamp', 'training_loss', 'lr'])
+    csv_writer.writerow(['global_step', 'epoch', 'step', 'timestamp', 'training_loss', 'lr'])
 with open(validation_csv_path, 'w') as f:
     csv_writer = csv.writer(f)
-    csv_writer.writerow(['step', 'validation_loss'])
+    csv_writer.writerow(['global_step', 'epoch', 'step', 'timestamp', 'validation_loss'])
 
 # Load the training and validation data.
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -159,7 +161,7 @@ elif args.optimizer == 'AdamW':
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
 if args.lr_schedule == 'triangular':
     sched = torch.optim.lr_scheduler.CyclicLR(opt, 0., args.lr, cycle_momentum=False,
-                                              step_size_up=np.ceil(len(train_data)/2))
+                                              step_size_up=np.ceil(args.n_epochs*len(train_data)/2))
 elif args.lr_schedule == 'exponential_plus_constant':
     sched = gns.ExponentialPlusConstantLR(opt, args.lr, args.lr_exponential_min,
                                           args.lr_exponential_decay_factor,
@@ -171,59 +173,64 @@ else:
 pr('Training...')
 model.train()
 
-training_loss_sum = 0.0
-training_loss_n = 0
-for i, dps in enumerate(train_data):
-    # Record training loss.
-    if training_loss_n == args.log_record_interval:
+global_step = 0
+for epoch in range(args.n_epochs):
+    training_loss_sum = 0.0
+    training_loss_n = 0
+    for i, dps in enumerate(train_data):
+        # Record training loss.
+        if training_loss_n == args.log_record_interval:
+            avg_training_loss = training_loss_sum / training_loss_n
+            lr = opt.param_groups[0]['lr']
+            pr(f'  Epoch {epoch} Step {i}: avg training loss = {avg_training_loss:.3e} lr = {lr}')
+            with open(csv_path, 'a') as f:
+                csv_writer = csv.writer(f)
+                csv_writer.writerow([global_step, epoch, i, nowstr(), avg_training_loss, lr])
+            training_loss_sum = 0.0
+            training_loss_n = 0
+        # Record validation loss.
+        if i % args.validation_interval == 0:
+            val_loss = calc_val_loss(model, val_data)
+            pr(f'  Epoch {epoch} Step {i}: validation loss = {val_loss:.3e}')
+            with open(validation_csv_path, 'a') as f:
+                csv_writer = csv.writer(f)
+                csv_writer.writerow([global_step, epoch, i, nowstr(), val_loss])
+        # Save a checkpoint.
+        if i % args.checkpoint_interval == 0:
+            torch.save(model.state_dict(), os.path.join(outdir, f'checkpoint-{epoch}.{i}.pt'))
+            pr(f'  Epoch {epoch} Step {i}: saved checkpoint.')
+
+        # Train on the current batch.
+        acc_hat = model(dps)
+        acc = torch.stack([dp.target_accelerations for dp in dps])
+        loss = loss_fn(acc, acc_hat)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        if sched is not None:
+            sched.step()
+
+        # Update the running training loss.
+        training_loss_sum += loss.item()
+        training_loss_n += 1
+
+        global_step += 1
+
+    # Record the final training loss for this epoch.
+    if training_loss_n > 0:
         avg_training_loss = training_loss_sum / training_loss_n
         lr = opt.param_groups[0]['lr']
-        pr(f'  Step {i}: avg training loss = {avg_training_loss:.3e} lr = {lr}')
-        with open(csv_path, 'a') as f:
-            csv_writer = csv.writer(f)
-            csv_writer.writerow([i, nowstr(), avg_training_loss, lr])
-        training_loss_sum = 0.0
-        training_loss_n = 0
-    # Record validation loss.
-    if i % args.validation_interval == 0:
-        val_loss = calc_val_loss(model, val_data)
-        pr(f'  Step {i}: validation loss = {val_loss:.3e}')
-        with open(validation_csv_path, 'a') as f:
-            csv_writer = csv.writer(f)
-            csv_writer.writerow([i, val_loss])
-    # Save a checkpoint.
-    if i % args.checkpoint_interval == 0:
-        torch.save(model.state_dict(), os.path.join(outdir, f'checkpoint-{i}.pt'))
-        pr(f'  Step {i}: saved checkpoint.')
+        pr(f'  Epoch {epoch} Step {len(train_data)}: final avg training loss = {avg_training_loss:.3e} lr = {lr}')
+    with open(csv_path, 'a') as f:
+        csv_writer = csv.writer(f)
+        csv_writer.writerow([global_step, epoch, len(train_data), nowstr(), avg_training_loss, lr])
 
-    # Train on the current batch.
-    acc_hat = model(dps)
-    acc = torch.stack([dp.target_accelerations for dp in dps])
-    loss = loss_fn(acc, acc_hat)
-    opt.zero_grad()
-    loss.backward()
-    opt.step()
-    if sched is not None:
-        sched.step()
-
-    # Update the running training loss.
-    training_loss_sum += loss.item()
-    training_loss_n += 1
-
-# Record the final training loss.
-if training_loss_n > 0:
-    avg_training_loss = training_loss_sum / training_loss_n
-    lr = opt.param_groups[0]['lr']
-    pr(f'  Step {len(train_data)}: final avg training loss = {avg_training_loss:.3e} lr = {lr}')
-with open(csv_path, 'a') as f:
-    csv_writer = csv.writer(f)
-    csv_writer.writerow([len(train_data), nowstr(), avg_training_loss, lr])
 # Record the final validation loss.
 val_loss = calc_val_loss(model, val_data)
-pr(f'  Step {len(train_data)}: final validation loss = {val_loss:.3e}')
+pr(f'  Epoch {epoch} Step {len(train_data)}: final validation loss = {val_loss:.3e}')
 with open(validation_csv_path, 'a') as f:
     csv_writer = csv.writer(f)
-    csv_writer.writerow([len(train_data), val_loss])
+    csv_writer.writerow([global_step, epoch, len(train_data), nowstr(), val_loss])
 # Save the final checkpoint.
-torch.save(model.state_dict(), os.path.join(outdir, f'checkpoint-{len(train_data)}.pt'))
-pr(f'  Step {len(train_data)}: saved final checkpoint.')
+torch.save(model.state_dict(), os.path.join(outdir, f'checkpoint-{epoch}.{len(train_data)}.pt'))
+pr(f'  Epoch {epoch} Step {len(train_data)}: saved final checkpoint.')
