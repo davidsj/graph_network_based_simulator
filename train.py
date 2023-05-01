@@ -33,7 +33,7 @@ parser.add_argument('--cum_velocity_noise_std', type=float, default=0.0003,
                          'to help the model be robust to accumulated rollout error.')
 parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'AdamW'])
 parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate.')
-parser.add_argument('--lr_schedule', type=str, default='triangular',
+parser.add_argument('--lr_schedule', type=str, default='exponential_plus_constant',
                     choices=['constant', 'triangular', 'exponential_plus_constant'],
                     help='Learning rate schedule. If triangular, the learning rate will be '
                          'increased linearly from 0 to --lr over the first half of '
