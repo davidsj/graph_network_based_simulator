@@ -111,7 +111,7 @@ for split in ['training', 'validation', 'test']:
         materials = mpm.particle_info()['material']
         
         # Save the trajectory.
-        traj = gns.Trajectory(np.array(positions), np.array(materials), len(MPMSolver.materials))
+        traj = gns.Trajectory(np.array(positions), np.array(materials))
         traj.save(os.path.join(args.out_dir, split, f'{traj_idx}.npz'))
 
         # Compute statistics.
