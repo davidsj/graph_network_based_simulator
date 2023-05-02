@@ -1,6 +1,5 @@
-import numpy as np
 import torch
-from .trajectory import Trajectory, TorchDatapoint
+from .trajectory import TorchDatapoint
 
 class MLP(torch.nn.Module):
     """Shared MLP architecture for encoder, processor, and decoder."""
@@ -78,18 +77,27 @@ class Encoder(torch.nn.Module):
             dps = [dp]
         else:
             dps = dp
-        # This currently assumes all datapoints in the batch have the
-        # same number of particles. TODO: Pad with dummy particles.
-        #
-        # N = number of datapoints
-        # P = number of particles
-        # D = physical dimension
-        # V = number of previous velocities
-        mat = torch.stack([dp.materials for dp in dps])  # N x P
-        pos = torch.stack([dp.positions for dp in dps])  # N x P x D
-        vel = torch.stack([dp.velocities for dp in dps]) # N x P x V x D
-        n_datapoints, n_particles = mat.shape
-        device = mat.device
+
+        # Combine all the tensors into a single masked batched tensor, padding
+        # with dummy particles as necessary.
+        device = dps[0].materials.device
+        n_datapoints = len(dps)
+        max_n_particles = max([dp.materials.shape[0] for dp in dps])
+
+        node_mask = torch.zeros(n_datapoints, max_n_particles,
+                                dtype=torch.bool, device=device)
+        mat = torch.zeros(n_datapoints, max_n_particles,
+                          dtype=torch.int64, device=device)
+        pos = torch.zeros(n_datapoints, max_n_particles, self.physical_dim,
+                          dtype=torch.float32, device=device)
+        vel = torch.zeros(n_datapoints, max_n_particles, self.n_previous_velocities, self.physical_dim,
+                          dtype=torch.float32, device=device)
+        for i, dp in enumerate(dps):
+            n_particles = dp.materials.shape[0]
+            node_mask[i, :n_particles] = True
+            mat[i, :n_particles] = dp.materials
+            pos[i, :n_particles] = dp.positions
+            vel[i, :n_particles] = dp.velocities
 
         # Normalize velocities.
         vel = (vel - self.vel_mean) / self.vel_std
@@ -100,15 +108,15 @@ class Encoder(torch.nn.Module):
 
         # Concatenate the velocities, materials, and (if present) distance
         # to orthogonal walls, clipped to `connectivity_radius`.
-        velocities = vel.view(n_datapoints, n_particles, -1)
+        velocities = vel.view(n_datapoints, max_n_particles, -1)
         node_features = torch.cat([velocities, materials], dim=-1)
         if self.box_boundaries is not None:
-            wall_dist = torch.zeros(n_datapoints, n_particles, self.physical_dim, 2,
+            wall_dist = torch.zeros(n_datapoints, max_n_particles, self.physical_dim, 2,
                                     device=device)
             for i in range(self.physical_dim):
                 wall_dist[:, :, i, 0] = pos[:, :, i] - self.box_boundaries[i][0]
                 wall_dist[:, :, i, 1] = self.box_boundaries[i][1] - pos[:, :, i]
-            wall_dist = wall_dist.view(n_datapoints, n_particles, -1)
+            wall_dist = wall_dist.view(n_datapoints, max_n_particles, -1)
             normalized_wall_dist = torch.clamp(wall_dist/self.connectivity_radius,
                                                min=-1.0, max=1.0)
             node_features = torch.cat([node_features, normalized_wall_dist], dim=-1)
@@ -117,12 +125,13 @@ class Encoder(torch.nn.Module):
         # Identify neighbors.
         # We do this using brute force on the GPU rather than using a k-d tree
         # on the CPU, as it's about 20x as fast (tested on 2.95k particles).
-        left = pos.view(n_datapoints, -1, 1, self.physical_dim)
-        right = pos.view(n_datapoints, 1, -1, self.physical_dim)
-        mask = (left - right).square().sum(dim=-1) < self.connectivity_radius**2
+        left = pos.unsqueeze(2)  # n_datapoints x max_n_particles x 1 x physical_dim
+        right = pos.unsqueeze(1) # n_datapoints x 1 x max_n_particles x physical_dim
+        edge_mask = (left - right).square().sum(dim=-1) < self.connectivity_radius**2
+        edge_mask &= node_mask.unsqueeze(2) & node_mask.unsqueeze(1)
         if not self.self_edges:
-            mask.diagonal(dim1=1, dim2=2).fill_(False)
-        neighbor_idxs = mask.nonzero()
+            edge_mask.diagonal(dim1=1, dim2=2).fill_(False)
+        neighbor_idxs = edge_mask.nonzero()
 
         # Encode the edges for each pair of neighbors.
         receiver_pos = pos[neighbor_idxs[:, 0], neighbor_idxs[:, 1]]
@@ -132,7 +141,7 @@ class Encoder(torch.nn.Module):
         edge_features = torch.cat([normalized_displacements, distances], dim=1)
         edges = self.edge_encoder(edge_features)
 
-        return nodes, edges, neighbor_idxs
+        return nodes, node_mask, edges, neighbor_idxs
 
 class Processor(torch.nn.Module):
     """`n_layers` graph network blocks, as described in Battaglia et al (2018).
@@ -196,11 +205,11 @@ class Decoder(MLP):
         # in the acceleration statistics.
         self.acc_std = (self.acc_std.square() + (cum_acc_noise_std**2)/2).sqrt()
 
-    def forward(self, nodes):
+    def forward(self, nodes, node_mask):
         acc = super().forward(nodes)
         # De-normalize.
         acc = self.acc_mean + acc*self.acc_std
-        return acc
+        return acc*node_mask.unsqueeze(-1)
 
 class GNS(torch.nn.Module):
     """Graph network-based simulator for predicting particle acceleration,
@@ -217,9 +226,9 @@ class GNS(torch.nn.Module):
         self.decoder = Decoder(physical_dim, normalization_stats['acc'], cum_vel_noise_std)
 
     def forward(self, dp):
-        nodes, edges, neighbor_idxs = self.encoder(dp)
+        nodes, node_mask, edges, neighbor_idxs = self.encoder(dp)
         nodes, edges, neighbor_idxs = self.processor(nodes, edges, neighbor_idxs)
-        accelerations = self.decoder(nodes)
+        accelerations = self.decoder(nodes, node_mask)
 
         # The modules return data with the batch dimension, so we remove it
         # if that's not how it was given to us.
@@ -227,3 +236,23 @@ class GNS(torch.nn.Module):
             return accelerations[0]
         else:
             return accelerations
+
+    def get_loss(self, dp, mean=False):
+        """Return the total or mean loss across all particles in a batch, along
+        with the total number of particles."""
+        if isinstance(dp, TorchDatapoint):
+            dps = [dp]
+        else:
+            dps = dp
+        acc_hat = self.forward(dps)
+
+        loss = 0.0
+        total_n = 0
+        for i, dp in enumerate(dps):
+            n = dp.target_accelerations.shape[0]
+            loss += (acc_hat[i, :n] - dp.target_accelerations).square().sum()
+            total_n += n
+
+        if mean:
+            loss /= total_n
+        return loss, total_n

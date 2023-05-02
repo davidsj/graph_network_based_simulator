@@ -51,8 +51,8 @@ parser.add_argument('--validation_interval', type=int, default=10000,
                     help='Number of training steps between calculating validation loss.')
 parser.add_argument('--log_record_interval', type=int, default=100,
                     help='Number of training steps between training log records.')
-parser.add_argument('--training_batch_size', type=int, default=1)
-parser.add_argument('--validation_batch_size', type=int, default=1)
+parser.add_argument('--training_batch_size', type=int, default=2)
+parser.add_argument('--validation_batch_size', type=int, default=2)
 parser.add_argument('--n_epochs', type=int, default=1)
 parser.add_argument('--max_training_trajectories', type=int, default=None,
                     help='Maximum number of training trajectories to use. If None, use all.')
@@ -140,11 +140,9 @@ def calc_val_loss(model, val_data):
     val_loss_n = 0
     with torch.no_grad():
         for dps in tqdm.tqdm(val_data):
-            acc_hat = model(dps)
-            acc = torch.stack([dp.target_accelerations for dp in dps])
-            loss = loss_fn(acc, acc_hat).item()
-            val_loss_sum += len(dps) * loss
-            val_loss_n += len(dps)
+            batch_loss, batch_n = model.get_loss(dps)
+            val_loss_sum += batch_loss.item()
+            val_loss_n += batch_n
 
     model.train(prev_model_training_state)
     torch.cuda.empty_cache()
@@ -201,9 +199,7 @@ for epoch in range(args.n_epochs):
             pr(f'  Epoch {epoch} Step {i}: saved checkpoint.')
 
         # Train on the current batch.
-        acc_hat = model(dps)
-        acc = torch.stack([dp.target_accelerations for dp in dps])
-        loss = loss_fn(acc, acc_hat)
+        loss, _ = model.get_loss(dps, mean=True)
         opt.zero_grad()
         loss.backward()
         opt.step()
