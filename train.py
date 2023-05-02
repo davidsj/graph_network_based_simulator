@@ -60,6 +60,8 @@ parser.add_argument('--max_validation_trajectories', type=int, default=5,
                     help='Maximum number of validation trajectories to use. If None, use all.')
 parser.add_argument('--run_info', type=str, default=None,
                     help='Additional info string to include in metadata.')
+parser.add_argument('--seed', type=int, default=None,
+                    help='Optional random seed to use for reproducibility.')
 args = parser.parse_args()
 
 # Validate arguments.
@@ -80,6 +82,10 @@ assert args.validation_batch_size > 0
 assert args.n_epochs >= 0
 assert args.max_training_trajectories is None or args.max_training_trajectories >= 0
 assert args.max_validation_trajectories is None or args.max_validation_trajectories > 0
+
+# Set random seed.
+if args.seed is not None:
+    torch.manual_seed(args.seed)
 
 # Load metadata.
 with open(os.path.join(args.dataset_dir, 'metadata.json'), 'r') as f:
